@@ -21,14 +21,13 @@ export interface ExtendedNapCat extends NapCat {
   bot_id: number
   app_name: string
   app_version: string
-  name?: string
 }
 
 export const connectedBots: Map<number, ExtendedNapCat> = new Map()
 
 async function connectBot(config: cfg.NapCatInstanceConfig, index: number): Promise<ExtendedNapCat | null> {
-  const { protocol = 'ws', port = 3001, host = 'localhost', token = '', name } = config
-  const botName = name || `Bot${index + 1}`
+  const { protocol = 'ws', port = 3001, host = 'localhost', token = '' } = config
+  const botName = `Bot${index + 1}`
   const wsUrl = colors.green(`${protocol}://${host}:${port}${token ? '?access_token=***' : ''}`)
 
   logger.info(`>>> 正在连接 ${colors.cyan(botName)}: ${wsUrl}`)
@@ -50,12 +49,7 @@ async function connectBot(config: cfg.NapCatInstanceConfig, index: number): Prom
       )
 
       if (connectedBots.has(user_id)) {
-        const existingBot = connectedBots.get(user_id)!
-        if (existingBot.name) {
-          logger.warn(
-            `${colors.yellow(botName)} (${user_id}) 与 ${colors.yellow(existingBot.name)} (${user_id}) QQ 号重复，将跳过`,
-          )
-        }
+        logger.warn(`${colors.yellow(botName)} (${user_id}) 与已存在的 bot (${user_id}) QQ 号重复，将跳过`)
         napcat.close()
         resolve(null)
         return
@@ -66,7 +60,6 @@ async function connectBot(config: cfg.NapCatInstanceConfig, index: number): Prom
       extendedNapCat.bot_id = user_id
       extendedNapCat.app_name = app_name
       extendedNapCat.app_version = app_version
-      extendedNapCat.name = botName
 
       resolve(extendedNapCat)
     })
@@ -229,12 +222,13 @@ export async function start(options: StartOptions = {}): Promise<void> {
   const seenEndpoints = new Set<string>()
   const duplicateConfigs: string[] = []
 
-  for (const config of napcatConfigs) {
+  for (let i = 0; i < napcatConfigs.length; i++) {
+    const config = napcatConfigs[i]
     const { protocol = 'ws', host = 'localhost', port = 3001 } = config
     const endpoint = `${protocol}://${host}:${port}`
 
     if (seenEndpoints.has(endpoint)) {
-      duplicateConfigs.push(`${config.name || '未命名'} (${endpoint})`)
+      duplicateConfigs.push(`Bot${i + 1} (${endpoint})`)
     } else {
       seenEndpoints.add(endpoint)
     }
@@ -267,7 +261,7 @@ export async function start(options: StartOptions = {}): Promise<void> {
     logger.warn(`${colors.yellow(napcatConfigs.length - bots.length)} 个 NapCat 实例连接失败`)
   }
 
-  const botNames = bots.map((b) => `${b.name}(${b.bot_id})`).join(', ')
+  const botNames = bots.map((b) => `${b.bot_id}`).join(', ')
   logger.info(colors.green(`成功连接 ${bots.length} 个实例: ${botNames}`))
   logger.info(colors.dim('='.repeat(40)))
 
