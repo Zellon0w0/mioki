@@ -9,7 +9,7 @@ import type { LogLevel } from 'napcat-sdk'
  * NapCat 实例配置
  */
 export interface NapCatInstanceConfig {
-  name?: string
+  name?: string // 已废弃
   protocol?: 'ws' | 'wss'
   port?: number
   host?: string

@@ -126,7 +126,6 @@ interface CliOptions {
       "error_push": true,
       "napcat": [
         {
-          "name": "bot1",
           "protocol": "${protocol}",
           "port": ${port},
           "host": "${host}",
