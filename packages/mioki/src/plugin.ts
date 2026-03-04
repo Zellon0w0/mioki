@@ -215,12 +215,23 @@ export const deduplicator = new Deduplicator()
  * Mioki 上下文对象，包含 Mioki 运行时的信息和方法
  */
 export interface MiokiContext extends Services, Configs, Utils, RemoveBotParam<Actions> {
-  /** 当前处理事件的机器人实例 */
+  /**
+   * 单实例模式下：机器人实例
+   * 多实例模式下：第一个机器人实例
+   *
+   * 如果要获取指定机器人实例，请使用 ctx.getBot(id) 方法，id 通常可以从 event.self_id 获取
+   */
   bot: NapCat
-  /** 所有已连接的机器人实例列表 */
-  bots: ExtendedNapCat[]
   /** 当前机器人 QQ 号 */
   self_id: number
+
+  /** 多实例模式下：所有已连接的机器人实例列表 */
+  bots: ExtendedNapCat[]
+  /** 多实例模式下：通过 QQ 号获取机器人实例 */
+  pickBot: (id: number) => ExtendedNapCat
+  /** 多实例模式下：需要手动传入 bot 实例的操作方法集合*/
+  actions: Actions
+
   /** 消息构造器 */
   segment: NapCat['segment']
   /** 通过域名获取 Cookies */
@@ -398,13 +409,15 @@ export async function enablePlugin(
     const createContext = (bot: ExtendedNapCat): MiokiContext => {
       return {
         bot,
-        bots,
         self_id: bot.bot_id,
+        bots,
+        pickBot: (id: number) => bots.find((b) => b.bot_id === id)!,
         segment: bot.segment,
         getCookie: bot.getCookie.bind(bot),
         ...utilsExports,
         ...configExports,
         ...buildRemovedActions(bot),
+        actions: actionsExports,
         logger,
         services: servicesExports.services,
         clears: userClears,
