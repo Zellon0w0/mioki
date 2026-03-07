@@ -914,8 +914,8 @@ export class NapCat {
   /**
    * 设置群成员专属头衔
    */
-  setGroupSpecialTitle(group_id: number, user_id: number, title: string): Promise<void> {
-    return this.api<void>('set_group_special_title', { group_id, user_id, title })
+  setGroupSpecialTitle(group_id: number, user_id: number, special_title: string): Promise<void> {
+    return this.api<void>('set_group_special_title', { group_id, user_id, special_title })
   }
 
   /**

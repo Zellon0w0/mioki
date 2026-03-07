@@ -24,7 +24,6 @@ export const ArchMap: Record<string, string> = {
 export interface BotStatus {
   uin: number
   nickname: string
-  name?: string
   friends: number
   groups: number
   send: number
@@ -115,7 +114,6 @@ export async function getMiokiStatus(bots: ExtendedNapCat[]): Promise<MiokiStatu
       botStatuses.push({
         uin: bot.bot_id,
         nickname: bot.nickname,
-        name: bot.name,
         friends: friendList.length,
         groups: groupList.length,
         send: bot.stat.send.group + bot.stat.send.private,
@@ -128,7 +126,6 @@ export async function getMiokiStatus(bots: ExtendedNapCat[]): Promise<MiokiStatu
       botStatuses.push({
         uin: bot.bot_id,
         nickname: bot.nickname,
-        name: bot.name,
         friends: 0,
         groups: 0,
         send: 0,
@@ -184,17 +181,17 @@ export async function formatMiokiStatus(status: MiokiStatus): Promise<string> {
   const diskDesc = `${disk.percent}%-${filesize(disk.used, { round: 1 })}/${filesize(disk.total, { round: 1 })}`
 
   const botLines = bots
-    .map((bot, index) => {
-      const namePrefix = bot.name ? `[${bot.name}] ` : ''
-      return `👤 ${namePrefix}${bot.nickname} (${bot.uin})\n   📋 ${localNum(bot.friends)} 好友 / ${localNum(bot.groups)} 群 / 📮 收 ${localNum(bot.receive)} 发 ${localNum(bot.send)}`
+    .map((bot) => {
+      return `👤 ${bot.nickname} (${bot.uin})\n   📋 ${localNum(bot.friends)} 好友 / ${localNum(bot.groups)} 群 / 📮 收 ${localNum(bot.receive)} 发 ${localNum(bot.send)}`
     })
     .join('\n')
+
+  const statsLine = bots.length > 1 ? `\n📮 总计: 收 ${localNum(stats.receive)} 条，发 ${localNum(stats.send)} 条` : ''
 
   return `
 〓 🟢 mioki 状态 〓
 ${botLines}
-🧩 启用了 ${localNum(plugins.enabled)} 个插件，共 ${localNum(plugins.total)} 个
-📮 总计: 收 ${localNum(stats.receive)} 条，发 ${localNum(stats.send)} 条
+🧩 启用了 ${localNum(plugins.enabled)} 个插件，共 ${localNum(plugins.total)} 个${statsLine}
 🚀 ${filesize(memory.rss.used, { round: 1 })}/${memory.percent}%
 ⏳ 已运行 ${prettyMs(stats.uptime, { hideYear: true, secondsDecimalDigits: 0 })}
 🤖 mioki/${versions.mioki}-NapCat/${versions.napcat}
