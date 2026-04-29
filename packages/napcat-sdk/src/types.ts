@@ -987,7 +987,7 @@ export type GroupIncreaseNoticeEvent = GroupNoticeEventBase<
     /** 操作者 QQ 号（如邀请者） */
     operator_id: number
     /** 加入类型：invite-邀请, add-主动加群, approve-管理员审批 */
-    actions_type: 'invite' | 'add' | 'approve'
+    action_type: 'invite' | 'add' | 'approve'
   }
 >
 
@@ -998,7 +998,7 @@ export type GroupDecreaseNoticeEvent = GroupNoticeEventBase<
     /** 操作者 QQ 号 */
     operator_id: number
     /** 离开类型：kick-被踢, leave-主动退出 */
-    actions_type: 'kick' | 'leave'
+    action_type: 'leave' | 'kick' | 'kick_me' | 'disband'
   }
 >
 
