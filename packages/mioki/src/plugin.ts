@@ -450,18 +450,16 @@ export async function enablePlugin(
                 }
               }
 
-              // 过滤来自连接实例的事件
-              const senderUserId = e.user_id
-              const senderOperatorId = e.operator_id
+              // 只过滤消息事件中的连接实例
+              if (isMessageEvent(e)) {
+                const messageEvent = e as MessageEvent
+                const senderUserId = messageEvent.user_id
+                const isFromConnectedBot = senderUserId && bots.some((b) => b.bot_id === senderUserId)
 
-              // 检查发送者是否为连接的实例
-              const isFromConnectedBot = senderUserId && bots.some((b) => b.bot_id === senderUserId)
-              const isFromConnectedBotOperator = senderOperatorId && bots.some((b) => b.bot_id === senderOperatorId)
-
-              if (isFromConnectedBot || isFromConnectedBotOperator) {
-                return
+                if (isFromConnectedBot) {
+                  return
+                }
               }
-
               // 根据选项决定是否去重
               if (deduplicate && isDeduplicableEvent(e)) {
                 if (deduplicator.isProcessed(e, dedupeScope)) {
