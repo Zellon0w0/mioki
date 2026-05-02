@@ -399,6 +399,19 @@ export interface SendCustomMusicElement {
 /** 发送的音乐分享消息段 */
 export type SendMusicElement = SendPlatformMusicElement | SendCustomMusicElement
 
+/** 合并转发外显字段 */
+export interface ForwardDisplayOptions {
+  /** 合并转发标题 */
+  source?: string
+  /** 合并转发预览信息*/
+  news?: Array<{ text: string }>
+  /** 合并转发底部小字提示 */
+  summary?: string
+  /** 合并转发摘要文字 */
+  prompt?: string
+}
+
+
 /** 发送的合并转发消息段 */
 export interface SendForwardElement {
   type: 'forward'
@@ -426,6 +439,14 @@ export interface SendNodeContentElement {
   nickname?: string
   /** 自定义消息内容 */
   content: SendElement[]
+  /** 合并转发外显 - 标题*/
+  source?: string
+  /** 合并转发外显 - 预览信息*/
+  news?: Array<{ text: string }>
+  /** 合并转发外显 - 底部小字提示 */
+  summary?: string
+  /** 合并转发外显 - 摘要文字 */
+  prompt?: string
 }
 
 /** 发送的合并转发节点消息段 */
