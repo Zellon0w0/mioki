@@ -399,6 +399,19 @@ export interface SendCustomMusicElement {
 /** 发送的音乐分享消息段 */
 export type SendMusicElement = SendPlatformMusicElement | SendCustomMusicElement
 
+/** 合并转发外显字段 */
+export interface ForwardDisplayOptions {
+  /** 合并转发标题 */
+  source?: string
+  /** 合并转发预览信息*/
+  news?: Array<{ text: string }>
+  /** 合并转发底部小字提示 */
+  summary?: string
+  /** 合并转发摘要文字 */
+  prompt?: string
+}
+
+
 /** 发送的合并转发消息段 */
 export interface SendForwardElement {
   type: 'forward'
@@ -426,6 +439,14 @@ export interface SendNodeContentElement {
   nickname?: string
   /** 自定义消息内容 */
   content: SendElement[]
+  /** 合并转发外显 - 标题*/
+  source?: string
+  /** 合并转发外显 - 预览信息*/
+  news?: Array<{ text: string }>
+  /** 合并转发外显 - 底部小字提示 */
+  summary?: string
+  /** 合并转发外显 - 摘要文字 */
+  prompt?: string
 }
 
 /** 发送的合并转发节点消息段 */
@@ -987,7 +1008,7 @@ export type GroupIncreaseNoticeEvent = GroupNoticeEventBase<
     /** 操作者 QQ 号（如邀请者） */
     operator_id: number
     /** 加入类型：invite-邀请, add-主动加群, approve-管理员审批 */
-    actions_type: 'invite' | 'add' | 'approve'
+    action_type: 'invite' | 'add' | 'approve'
   }
 >
 
@@ -998,7 +1019,7 @@ export type GroupDecreaseNoticeEvent = GroupNoticeEventBase<
     /** 操作者 QQ 号 */
     operator_id: number
     /** 离开类型：kick-被踢, leave-主动退出 */
-    actions_type: 'kick' | 'leave'
+    action_type: 'leave' | 'kick' | 'kick_me' | 'disband'
   }
 >
 

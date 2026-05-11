@@ -366,7 +366,7 @@ napcat.on('notice.group.increase', (event) => {
 | 属性 | 类型 | 说明 |
 | --- | --- | --- |
 | `operator_id` | `number` | 操作者 QQ 号（邀请者） |
-| `actions_type` | `string` | 加入方式：`invite`、`add`、`approve` |
+| `action_type` | `string` | 加入方式：`invite`、`add`、`approve` |
 
 ### notice.group.decrease
 
@@ -375,7 +375,7 @@ napcat.on('notice.group.increase', (event) => {
 ```ts
 napcat.on('notice.group.decrease', (event) => {
   console.log(`${event.user_id} 离开了群 ${event.group_id}`)
-  console.log(`离开方式: ${event.actions_type}`) // 'kick' | 'leave'
+  console.log(`离开方式: ${event.action_type}`) // 'kick' | 'leave'
 })
 ```
 
@@ -384,7 +384,7 @@ napcat.on('notice.group.decrease', (event) => {
 | 属性 | 类型 | 说明 |
 | --- | --- | --- |
 | `operator_id` | `number` | 操作者 QQ 号 |
-| `actions_type` | `string` | 离开方式：`kick`（被踢）、`leave`（主动退出） |
+| `action_type` | `string` | 离开方式：`kick`（被踢）、`leave`（主动退出） |
 
 ### notice.group.admin
 
