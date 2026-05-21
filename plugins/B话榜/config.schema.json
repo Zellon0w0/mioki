@@ -1,0 +1,33 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "B话榜 插件配置",
+  "description": "管理 B话榜 插件的启用状态及群白名单",
+  "type": "object",
+  "properties": {
+    "enabled": {
+      "title": "启用插件",
+      "type": "boolean",
+      "default": true,
+      "description": "是否开启 B话记录与查询功能"
+    },
+    "groupWhitelist": {
+      "title": "白名单群号",
+      "type": "array",
+      "items": {
+        "type": "integer"
+      },
+      "default": [],
+      "description": "启用 B话榜 的 QQ 群号列表，每行一个"
+    },
+    "nickname": {
+      "title": "群别名/备注",
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": [],
+      "description": "与群号一一对应的群别名（用于报表展示，为空时默认使用群名），每行一个"
+    }
+  },
+  "required": ["groupWhitelist"]
+}
