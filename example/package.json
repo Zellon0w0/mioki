@@ -17,7 +17,8 @@
     "plugins": [
       "like",
       "qzone",
-      "webui"
+      "webui",
+      "chatgpt"
     ],
     "log_level": "info",
     "plugins_dir": "../plugins",

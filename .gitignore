@@ -2,9 +2,15 @@ node_modules
 .DS_Store
 dist
 logs
-
 bot
+
+# Plugins runtime data, configs and logs
 **/plugins/**/.browser-data
+**/plugins/**/config.json
+**/plugins/**/whitelist.json
+**/plugins/**/*.db
+**/plugins/**/*.db-*
+**/plugins/**/*.bak
 
 # VitePress build output
 docs/.vitepress/dist

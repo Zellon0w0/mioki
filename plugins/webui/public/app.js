@@ -39,8 +39,11 @@ function setDeepValue(obj, path, value) {
   let current = obj
   for (let i = 0; i < keys.length - 1; i++) {
     const key = keys[i]
+    const nextKey = keys[i + 1]
+    const isNextKeyNumeric = /^\d+$/.test(nextKey)
+    
     if (!(key in current)) {
-      current[key] = {}
+      current[key] = isNextKeyNumeric ? [] : {}
     }
     current = current[key]
   }
@@ -57,6 +60,88 @@ function getDeepValue(obj, path) {
     current = current[key]
   }
   return current
+}
+
+// Helper: Render individual item in object array
+function renderArrayObjectItem(container, itemSchema, config, arrayPath, index) {
+  const itemWrapper = document.createElement('div')
+  itemWrapper.className = 'array-object-item card'
+  itemWrapper.innerHTML = `
+    <button type="button" class="btn btn-danger btn-sm remove-item-btn" style="position: absolute; right: 1rem; top: 1rem; z-index: 10;">删除</button>
+    <div class="form-grid array-item-fields"></div>
+  `
+  container.appendChild(itemWrapper)
+  
+  const fieldsContainer = itemWrapper.querySelector('.array-item-fields')
+  const itemPath = `${arrayPath}.${index}`
+  
+  renderForm(itemSchema, config, fieldsContainer, itemPath)
+  
+  const removeBtn = itemWrapper.querySelector('.remove-item-btn')
+  removeBtn.addEventListener('click', () => {
+    itemWrapper.remove()
+    reindexArrayContainer(container, itemSchema)
+    syncApiDropdowns(container)
+  })
+}
+
+// Helper: Re-index paths inside array object container
+function reindexArrayContainer(container, itemSchema) {
+  const arrayPath = container.getAttribute('data-array-path')
+  const items = container.querySelectorAll('.array-object-item')
+  
+  items.forEach((item, index) => {
+    const fieldsContainer = item.querySelector('.array-item-fields')
+    const inputs = fieldsContainer.querySelectorAll('[data-path]')
+    
+    inputs.forEach(input => {
+      const oldPath = input.getAttribute('data-path')
+      const parts = oldPath.split('.')
+      const propKey = parts.slice(parts.indexOf(arrayPath.split('.').pop()) + 2).join('.')
+      const newPath = `${arrayPath}.${index}.${propKey}`
+      
+      input.setAttribute('data-path', newPath)
+      const oldId = input.getAttribute('id')
+      if (oldId) {
+        input.setAttribute('id', `field-${newPath.replace(/\./g, '-')}`)
+      }
+      
+      const formGroup = input.closest('.form-group')
+      if (formGroup) {
+        const label = formGroup.querySelector('label')
+        if (label) {
+          label.setAttribute('for', `field-${newPath.replace(/\./g, '-')}`)
+        }
+      }
+    })
+  })
+}
+
+// Helper: Sync model select options in real time
+function syncModelDropdowns(textarea) {
+  const models = textarea.value.split('\n').map(line => line.trim()).filter(Boolean)
+  const dropdowns = document.querySelectorAll('.current-model-select')
+  dropdowns.forEach(select => {
+    const curVal = select.value
+    select.innerHTML = models.map(m => `<option value="${m}">${m}</option>`).join('')
+    if (models.includes(curVal)) {
+      select.value = curVal
+    }
+  })
+}
+
+// Helper: Sync API select options in real time
+function syncApiDropdowns(container) {
+  const nameInputs = container.querySelectorAll('[data-path$=".name"]')
+  const apis = Array.from(nameInputs).map(input => input.value.trim()).filter(Boolean)
+  const dropdowns = document.querySelectorAll('.current-api-select')
+  dropdowns.forEach(select => {
+    const curVal = select.value
+    select.innerHTML = apis.map(a => `<option value="${a}">${a}</option>`).join('')
+    if (apis.includes(curVal)) {
+      select.value = curVal
+    }
+  })
 }
 
 // Authentication Check
@@ -256,17 +341,51 @@ function renderForm(schema, config, container, prefixPath = '') {
       renderForm(prop, config, nestedContainer, dataPath)
     } 
     else if (prop.type === 'array') {
-      wrapper.className = 'form-group'
-      
-      // Determine array items type (default to string)
       const itemType = prop.items?.type || 'string'
       
-      wrapper.innerHTML = `
-        <label for="${fieldId}">${prop.title || key} (${itemType === 'integer' || itemType === 'number' ? '数字列表，每行一个' : '文本列表，每行一个'})</label>
-        <textarea id="${fieldId}" data-path="${dataPath}" placeholder="${prop.description || ''}" rows="5">${Array.isArray(currentValue) ? currentValue.join('\n') : ''}</textarea>
-        ${prop.description ? `<div class="description">${prop.description}</div>` : ''}
-      `
-      container.appendChild(wrapper)
+      if (itemType === 'object') {
+        wrapper.className = 'form-group array-object-group'
+        wrapper.innerHTML = `
+          <label>${prop.title || key}</label>
+          ${prop.description ? `<div class="description">${prop.description}</div>` : ''}
+          <div class="array-items-container" id="array-container-${fieldId}" data-array-path="${dataPath}"></div>
+          <button type="button" class="btn btn-secondary btn-sm add-array-item-btn" data-field-id="${fieldId}">+ 添加 ${prop.items.title || '项'}</button>
+        `
+        container.appendChild(wrapper)
+        
+        const itemsContainer = wrapper.querySelector(`#array-container-${fieldId}`)
+        const itemsList = currentValue || []
+        
+        itemsList.forEach((item, index) => {
+          renderArrayObjectItem(itemsContainer, prop.items, config, dataPath, index)
+        })
+        
+        const addBtn = wrapper.querySelector('.add-array-item-btn')
+        addBtn.addEventListener('click', () => {
+          const nextIndex = itemsContainer.children.length
+          renderArrayObjectItem(itemsContainer, prop.items, config, dataPath, nextIndex)
+          syncApiDropdowns(itemsContainer)
+        })
+        
+        itemsContainer.addEventListener('input', (e) => {
+          if (e.target.matches('[data-path$=".name"]')) {
+            syncApiDropdowns(itemsContainer)
+          }
+        })
+      } else {
+        wrapper.className = 'form-group'
+        wrapper.innerHTML = `
+          <label for="${fieldId}">${prop.title || key} (${itemType === 'integer' || itemType === 'number' ? '数字列表，每行一个' : '文本列表，每行一个'})</label>
+          <textarea id="${fieldId}" data-path="${dataPath}" class="${key === 'models' ? 'models-textarea' : ''}" placeholder="${prop.description || ''}" rows="5">${Array.isArray(currentValue) ? currentValue.join('\n') : ''}</textarea>
+          ${prop.description ? `<div class="description">${prop.description}</div>` : ''}
+        `
+        container.appendChild(wrapper)
+        
+        if (key === 'models') {
+          const textarea = wrapper.querySelector('.models-textarea')
+          textarea.addEventListener('input', () => syncModelDropdowns(textarea))
+        }
+      }
     } 
     else if (prop.type === 'integer' || prop.type === 'number') {
       wrapper.className = 'form-group'
@@ -288,12 +407,40 @@ function renderForm(schema, config, container, prefixPath = '') {
                        key.toLowerCase().includes('password') || 
                        prop.format === 'password'
                        
-      wrapper.innerHTML = `
-        <label for="${fieldId}">${prop.title || key}</label>
-        <input type="${isSecret ? 'password' : 'text'}" id="${fieldId}" data-path="${dataPath}" value="${currentValue !== undefined ? currentValue : ''}" placeholder="${prop.description || ''}">
-        ${prop.description ? `<div class="description">${prop.description}</div>` : ''}
-      `
-      container.appendChild(wrapper)
+      if (key === 'currentModel' && (config.models || (schema.properties && schema.properties.models))) {
+        const modelsList = config.models || []
+        const optionsHtml = modelsList.map(m => `<option value="${m}" ${currentValue === m ? 'selected' : ''}>${m}</option>`).join('')
+        
+        wrapper.innerHTML = `
+          <label for="${fieldId}">${prop.title || key}</label>
+          <select id="${fieldId}" data-path="${dataPath}" class="current-model-select">
+            ${optionsHtml}
+          </select>
+          ${prop.description ? `<div class="description">${prop.description}</div>` : ''}
+        `
+        container.appendChild(wrapper)
+      }
+      else if (key === 'currentApi' && (config.apis || (schema.properties && schema.properties.apis))) {
+        const apisList = Array.isArray(config.apis) ? config.apis.map(a => a.name) : (config.apis ? Object.keys(config.apis) : [])
+        const optionsHtml = apisList.map(a => `<option value="${a}" ${currentValue === a ? 'selected' : ''}>${a}</option>`).join('')
+        
+        wrapper.innerHTML = `
+          <label for="${fieldId}">${prop.title || key}</label>
+          <select id="${fieldId}" data-path="${dataPath}" class="current-api-select">
+            ${optionsHtml}
+          </select>
+          ${prop.description ? `<div class="description">${prop.description}</div>` : ''}
+        `
+        container.appendChild(wrapper)
+      }
+      else {
+        wrapper.innerHTML = `
+          <label for="${fieldId}">${prop.title || key}</label>
+          <input type="${isSecret ? 'password' : 'text'}" id="${fieldId}" data-path="${dataPath}" value="${currentValue !== undefined ? currentValue : ''}" placeholder="${prop.description || ''}">
+          ${prop.description ? `<div class="description">${prop.description}</div>` : ''}
+        `
+        container.appendChild(wrapper)
+      }
     }
   }
 }

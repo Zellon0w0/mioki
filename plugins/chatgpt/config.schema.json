@@ -1,0 +1,71 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ChatGPT 插件配置",
+  "description": "管理 ChatGPT 问答机器人的 API 密钥、接口地址、模型以及群白名单",
+  "type": "object",
+  "properties": {
+    "enabled": {
+      "title": "启用状态",
+      "type": "boolean",
+      "default": true,
+      "description": "是否开启本插件的应答处理"
+    },
+    "currentModel": {
+      "title": "当前模型",
+      "type": "string",
+      "default": "deepseek-chat",
+      "description": "当前选择使用的模型，从模型列表中选择"
+    },
+    "currentApi": {
+      "title": "当前 API 配置",
+      "type": "string",
+      "default": "deepseek",
+      "description": "当前选择使用的 API 密钥配置，从 API 列表中选择"
+    },
+    "models": {
+      "title": "可用模型列表",
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "配置可供切换的模型名称列表，每行一个"
+    },
+    "apis": {
+      "title": "API 密钥与接口配置",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "title": "API 接口配置",
+        "properties": {
+          "name": {
+            "title": "API 标识名称",
+            "type": "string",
+            "description": "API 的唯一英文标识，如 deepseek, openai 等"
+          },
+          "url": {
+            "title": "接口地址 (URL)",
+            "type": "string",
+            "description": "API 请求地址（如 https://api.openai.com/v1）"
+          },
+          "apiKey": {
+            "title": "API 密钥 (API Key)",
+            "type": "string",
+            "format": "password",
+            "description": "Bearer 密钥凭证"
+          }
+        },
+        "required": ["name", "url", "apiKey"]
+      },
+      "description": "自定义添加/删除/配置第三方 API 密钥与地址"
+    },
+    "groupWhitelist": {
+      "title": "白名单群号",
+      "type": "array",
+      "items": {
+        "type": "integer"
+      },
+      "description": "允许使用本插件的 QQ 群号，留空代表不限制，每行一个"
+    }
+  },
+  "required": ["enabled", "currentModel", "currentApi", "models", "apis"]
+}
