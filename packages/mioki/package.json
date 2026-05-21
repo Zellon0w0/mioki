@@ -45,6 +45,7 @@
     "consola": "^3.4.2",
     "dayjs": "^1.11.19",
     "dedent": "^1.7.1",
+    "express": "^4.21.2",
     "filesize": "^11.0.13",
     "jiti": "^2.6.1",
     "lowdb": "^7.0.1",
@@ -56,6 +57,7 @@
     "systeminformation": "^5.30.7"
   },
   "devDependencies": {
+    "@types/express": "^4.17.21",
     "tsdown": "catalog:dev",
     "typescript": "catalog:dev"
   }

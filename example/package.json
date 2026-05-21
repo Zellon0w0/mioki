@@ -16,7 +16,8 @@
     "admins": [],
     "plugins": [
       "like",
-      "qzone"
+      "qzone",
+      "webui"
     ],
     "log_level": "info",
     "plugins_dir": "../plugins",
@@ -26,9 +27,9 @@
     "napcat": [{
       "name": "bot1",
       "protocol": "ws",
-      "port": 3333,
-      "host": "localhost",
-      "token": "cdc93b212524c0c0a0a162f1edec347a"
+      "port": 3001,
+      "host": "192.168.11.107",
+      "token": "zellon114514"
     }]
   }
 }

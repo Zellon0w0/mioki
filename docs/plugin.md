@@ -392,7 +392,138 @@ export default definePlugin({
     })
   },
 })
+```## 插件配置开发 {#config-dev}
+
+为了方便在 WebUI 中可视化配置插件，mioki 推荐将插件的额外配置（如 API 密钥、模型名称、黑白名单等）存储在独立的 JSON 文件中，并搭配 `config.schema.json` 来定义表单结构。
+
+### 目录结构
+
+每个支持可视化配置的插件目录应符合以下结构：
+
 ```
+plugins/my-plugin/
+├── index.ts              # 插件逻辑
+├── config.json           # 插件配置数据（由插件读取，可被 WebUI 修改）
+└── config.schema.json    # 插件配置的 JSON Schema 声明文件
+```
+
+### 1. 声明配置 Schema (config.schema.json)
+
+`config.schema.json` 采用标准的 JSON Schema 规范，WebUI 会自动解析该文件并动态渲染成表单控件。
+
+```json
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ChatGPT 插件配置",
+  "description": "ChatGPT 聊天插件的运行配置项",
+  "type": "object",
+  "properties": {
+    "enabled": {
+      "title": "启用插件",
+      "type": "boolean",
+      "default": true,
+      "description": "是否开启聊天回复功能"
+    },
+    "apiKey": {
+      "title": "API Key",
+      "type": "string",
+      "description": "OpenAI 兼容的 API 密钥"
+    },
+    "model": {
+      "title": "模型名称",
+      "type": "string",
+      "default": "gpt-4o-mini",
+      "description": "请求使用的 AI 模型"
+    },
+    "whitelist": {
+      "title": "QQ 群白名单",
+      "type": "array",
+      "items": {
+        "type": "integer"
+      },
+      "description": "允许使用此插件的 QQ 群号列表，每行一个"
+    }
+  },
+  "required": ["apiKey"]
+}
+```
+
+#### 支持的 WebUI 控件映射：
+- `type: "boolean"`：渲染为 **开关切换 (Toggle)**
+- `type: "integer" | "number"`：渲染为 **数字输入框**
+- `type: "array"`：渲染为 **多行文本输入框 (Textarea)**，每行代表一个数组元素
+- `type: "string"`：默认渲染为 **文本输入框**
+  - 如果字段名称包含 `key`、`token`、`secret`、`password` 或 schema 中 `format` 设为 `"password"`，WebUI 会自动渲染为 **密码隐藏输入框**。
+- `type: "object"`：渲染为 **嵌套卡片分组**，支持深度嵌套。
+
+### 2. 在插件中读取和使用配置
+
+在插件的 `index.ts` 中，使用 Node.js 的 `fs` 模块在 `setup` 阶段加载本地配置。
+
+```ts
+import path from 'node:path'
+import fs from 'node:fs'
+import { definePlugin, getAbsPluginDir } from 'mioki'
+
+interface PluginConfig {
+  enabled: boolean
+  apiKey: string
+  model: string
+  whitelist: number[]
+}
+
+export default definePlugin({
+  name: 'my-plugin',
+  version: '1.0.0',
+  setup(ctx) {
+    const pluginDir = path.join(getAbsPluginDir(), 'my-plugin')
+    const configPath = path.join(pluginDir, 'config.json')
+
+    // 加载配置的辅助函数
+    const loadConfig = (): PluginConfig => {
+      const defaultConfig: PluginConfig = {
+        enabled: true,
+        apiKey: '',
+        model: 'gpt-4o-mini',
+        whitelist: []
+      }
+
+      if (!fs.existsSync(configPath)) {
+        return defaultConfig
+      }
+
+      try {
+        const fileContent = fs.readFileSync(configPath, 'utf-8')
+        return { ...defaultConfig, ...JSON.parse(fileContent) }
+      } catch (err: any) {
+        ctx.logger.error(`加载配置失败，将使用默认配置: ${err.message}`)
+        return defaultConfig
+      }
+    }
+
+    // 运行期间读取配置
+    ctx.handle('message.group', async (event) => {
+      const config = loadConfig()
+      
+      if (!config.enabled) return
+      
+      // 检查群白名单
+      if (config.whitelist.length > 0 && !config.whitelist.includes(event.group_id)) {
+        return
+      }
+
+      if (event.raw_message === 'AI测试') {
+        event.reply(`当前使用的模型是: ${config.model}`)
+      }
+    })
+  }
+})
+```
+
+> [!TIP]
+> **热重载机制：** 当用户在 WebUI 中修改配置并点击保存后，WebUI 插件会将配置写入 `config.json`，并自动触发对该插件的 **热重载 (Hot Reload)**。插件的 `setup()` 函数会重新执行，因此插件内无需写轮询逻辑，配置即刻生效。
+
+---
 
 ## 插件管理 {#management}
 
