@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Mioki 统一白名单管理</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="glow-bg">
+    <div class="glow-1"></div>
+    <div class="glow-2"></div>
+  </div>
+
+  <div class="container">
+    <!-- Left Plugin List Panel -->
+    <aside class="sidebar card">
+      <div class="sidebar-header">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>
+        <h2>插件列表</h2>
+      </div>
+      <ul id="plugin-list" class="plugin-list">
+        <!-- Dynamically injected plugins -->
+        <li class="loading-state">正在载入插件...</li>
+      </ul>
+    </aside>
+
+    <!-- Right Group Whitelist Selector Panel -->
+    <main class="main-content">
+      <!-- Welcome panel when no plugin field is active -->
+      <div id="welcome-view" class="card welcome-card">
+        <div class="welcome-icon">🛡️</div>
+        <h2>统一白名单与黑名单管理</h2>
+        <p>从左侧选择一个插件及对应的配置项，即可快速勾选、批量配置该插件允许/禁止响应的群聊。支持展示真实的群头像、群名称，并且保存后自动热重载插件生效！</p>
+      </div>
+
+      <!-- Config Panel -->
+      <div id="config-view" class="hide flex-col h-full">
+        <header class="header card">
+          <div class="header-info">
+            <h1 id="selected-title">加载中...</h1>
+            <p id="selected-desc">加载中...</p>
+          </div>
+          <div class="header-badge">
+            <span id="field-type-badge" class="badge">白名单</span>
+          </div>
+        </header>
+
+        <!-- Search and Filter Actions Bar -->
+        <section class="actions-bar card">
+          <div class="search-box">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+            <input type="text" id="search-input" placeholder="输入群名称、群号搜索...">
+          </div>
+          
+          <div class="filter-options">
+            <button class="filter-btn active" data-filter="all">显示全部</button>
+            <button class="filter-btn" data-filter="checked">已选中 (<span id="checked-count">0</span>)</button>
+            <button class="filter-btn" data-filter="unchecked">未选中</button>
+          </div>
+
+          <div class="bulk-actions">
+            <button id="select-all-btn" class="btn btn-secondary btn-sm">一键全选</button>
+            <button id="clear-all-btn" class="btn btn-secondary btn-sm">一键清空</button>
+          </div>
+        </section>
+
+        <!-- Cards Grid of Groups -->
+        <section class="grid-container">
+          <div id="groups-grid" class="groups-grid">
+            <!-- Group cards injected here -->
+          </div>
+        </section>
+
+        <!-- Floating save footer -->
+        <footer class="footer-actions card">
+          <div class="footer-info">
+            <span>当前已选中 <strong id="selected-summary-count">0</strong> 个群聊</span>
+          </div>
+          <div class="footer-buttons">
+            <button id="reset-btn" class="btn btn-secondary">重置修改</button>
+            <button id="save-btn" class="btn btn-primary">保存修改并热重载</button>
+          </div>
+        </footer>
+      </div>
+    </main>
+  </div>
+
+  <!-- Toast Notification -->
+  <div id="toast" class="toast hide">
+    <div class="toast-content">
+      <span class="toast-message"></span>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

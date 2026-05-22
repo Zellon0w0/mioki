@@ -1,0 +1,80 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "菜单 插件配置",
+  "description": "自定义指令菜单展示，支持 Eva-02、Hatsune、Cyberpunk 风格的高清图片渲染",
+  "type": "object",
+  "properties": {
+    "enabled": {
+      "title": "启用状态",
+      "type": "boolean",
+      "default": true,
+      "description": "是否启用菜单指令功能"
+    },
+    "command": {
+      "title": "触发指令",
+      "type": "string",
+      "default": "菜单",
+      "description": "发送该文字将触发菜单，如：菜单。注：同时支持全局前缀"
+    },
+    "title": {
+      "title": "菜单大标题",
+      "type": "string",
+      "default": "MIOKI ASSISTANT",
+      "description": "展示在菜单最顶端的机器人主标题"
+    },
+    "subtitle": {
+      "title": "菜单副标题",
+      "type": "string",
+      "default": "EVA UNIT-02 EDITION",
+      "description": "大标题下方的补充说明或版本描述"
+    },
+    "theme": {
+      "title": "菜单视觉主题",
+      "type": "string",
+      "default": "eva-02",
+      "description": "菜单的配色主题样式",
+      "enum": ["eva-02", "hatsune", "cyberpunk"],
+      "enumNames": ["EVA 二号机橙红战术", "初音绿玻璃拟态", "赛博朋克霓虹暗黑"]
+    },
+    "whitelist": {
+      "title": "白名单群组",
+      "type": "array",
+      "items": {
+        "type": "integer"
+      },
+      "description": "仅在此白名单群聊中响应菜单指令，为空代表全局响应，每行一个"
+    },
+    "categories": {
+      "title": "功能菜单分组",
+      "type": "array",
+      "items": {
+        "title": "菜单卡片",
+        "type": "object",
+        "properties": {
+          "name": {
+            "title": "分组名称 (例如: 60s 资讯)",
+            "type": "string"
+          },
+          "badge": {
+            "title": "分组标签 (例如: 60s)",
+            "type": "string"
+          },
+          "desc": {
+            "title": "功能描述",
+            "type": "string"
+          },
+          "commands": {
+            "title": "指令命令列表",
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "该分组包含的指令列表，每行一个"
+          }
+        },
+        "required": ["name"]
+      },
+      "description": "点击下方按钮增删或拖拽更改菜单展示分组及其包含的命令"
+    }
+  }
+}

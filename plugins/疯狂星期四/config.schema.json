@@ -1,0 +1,37 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "疯狂星期四 插件配置",
+  "description": "管理疯狂星期四文案插件的运行参数及白名单群组",
+  "type": "object",
+  "properties": {
+    "enabled": {
+      "title": "启用状态",
+      "type": "boolean",
+      "default": true,
+      "description": "是否开启疯狂星期四文案自动回复"
+    },
+    "apiUrl": {
+      "title": "API 请求地址",
+      "type": "string",
+      "default": "https://60s.zou2973496443.workers.dev/v2/kfc",
+      "description": "获取文案的 API 接口地址"
+    },
+    "whitelist": {
+      "title": "群白名单",
+      "type": "array",
+      "items": {
+        "type": "integer"
+      },
+      "description": "允许触发此命令的 QQ 群号，留空表示全部允许，每行一个"
+    },
+    "keywords": {
+      "title": "触发关键词",
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "触发该插件文案响应的关键词，如 'v50', 'kfc', '肯德基', '星期四'，每行一个"
+    }
+  },
+  "required": ["enabled", "apiUrl", "whitelist", "keywords"]
+}

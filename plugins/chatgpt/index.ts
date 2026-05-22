@@ -5,7 +5,7 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync, readdirSync, unlink } from 'node:fs'
 import MarkdownIt from 'markdown-it'
-// @ts-expect-error missing types
+// @ts-ignore missing types
 import mk from 'markdown-it-katex'
 import type { RecvImageElement } from 'napcat-sdk'
 

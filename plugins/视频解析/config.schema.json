@@ -1,0 +1,37 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "视频解析插件配置",
+  "description": "管理短视频平台（哔哩哔哩、抖音、快手、微视、小红书）解析的启用状态、群白名单及随机视频源",
+  "type": "object",
+  "properties": {
+    "enabled": {
+      "title": "启用状态",
+      "type": "boolean",
+      "default": true,
+      "description": "是否开启视频解析插件的应答处理"
+    },
+    "whitelist": {
+      "title": "白名单群组",
+      "type": "array",
+      "items": {
+        "type": "integer"
+      },
+      "description": "允许响应解析命令的 QQ 群号，留空表示允许所有群，每行一个"
+    },
+    "blacklist": {
+      "title": "用户黑名单",
+      "type": "array",
+      "items": {
+        "type": "integer"
+      },
+      "description": "屏蔽发送链接进行解析的 QQ 号，每行一个"
+    },
+    "randomVideoApi": {
+      "title": "随机视频 API",
+      "type": "string",
+      "default": "https://tucdn.wpon.cn/api-girl/index.php",
+      "description": "随机视频/sjsp 指令获取视频的页面地址"
+    }
+  },
+  "required": ["enabled", "whitelist", "blacklist", "randomVideoApi"]
+}

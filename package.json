@@ -38,6 +38,7 @@
     "@types/node": "catalog:dev",
     "@types/react": "catalog:react19",
     "@types/react-dom": "catalog:react19",
+    "axios": "^1.16.1",
     "bumpp": "^10.4.1",
     "express": "^4.21.2",
     "markdown-it": "^14.1.1",

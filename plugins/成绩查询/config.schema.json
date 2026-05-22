@@ -1,0 +1,34 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "成绩查询 插件配置",
+  "description": "查询教务系统成绩与绩点配置",
+  "type": "object",
+  "properties": {
+    "enabled": {
+      "title": "启用状态",
+      "type": "boolean",
+      "default": true,
+      "description": "是否启用成绩查询插件"
+    },
+    "browserPath": {
+      "title": "Chromium 路径",
+      "type": "string",
+      "default": "/usr/bin/chromium",
+      "description": "Puppeteer 使用的 Chromium/Chrome 可执行文件路径"
+    },
+    "gpaUrl": {
+      "title": "绩点查询链接",
+      "type": "string",
+      "description": "教务系统 GPA 成绩查询接口的完整 URL"
+    },
+    "whitelist": {
+      "title": "白名单群组",
+      "type": "array",
+      "items": {
+        "type": "integer"
+      },
+      "description": "允许响应该命令的 QQ 群号，每行一个"
+    }
+  },
+  "required": ["browserPath", "gpaUrl"]
+}

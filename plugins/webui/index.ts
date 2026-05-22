@@ -13,6 +13,7 @@ interface WebUIConfig {
 export default definePlugin({
   name: 'webui',
   version: '1.0.0',
+  priority: 10,
   description: 'WebUI 插件管理与配置面板',
   async setup(ctx) {
     const pluginDir = path.join(getAbsPluginDir(), 'webui')
@@ -73,6 +74,20 @@ export default definePlugin({
     }
     app.use(express.static(publicDir))
 
+    // 动态挂载其他插件的静态资源文件夹
+    app.use('/plugins/:name', (req, res, next) => {
+      const pluginName = req.params.name
+      // 避免路径穿越
+      if (!pluginName || pluginName.includes('..') || pluginName.includes('/') || pluginName.includes('\\')) {
+        return next()
+      }
+      const targetDir = path.join(getAbsPluginDir(), pluginName, 'public')
+      if (fs.existsSync(targetDir)) {
+        return express.static(targetDir)(req, res, next)
+      }
+      next()
+    })
+
     // 身份验证中间件
     const authMiddleware = (req: express.Request, res: express.Response, next: express.NextFunction) => {
       const authHeader = req.headers.authorization
@@ -92,6 +107,27 @@ export default definePlugin({
       }
       res.status(401).json({ error: 'Unauthorized' })
     }
+
+    // 动态注册接口服务
+    interface WebUIPage {
+      id: string
+      title: string
+      icon: string
+      url: string
+    }
+    const registeredPages: WebUIPage[] = []
+
+    ctx.addService('webui', {
+      app,
+      authMiddleware,
+      registerPage: (page: WebUIPage) => {
+        if (!registeredPages.some(p => p.id === page.id)) {
+          registeredPages.push(page)
+          ctx.logger.info(`WebUI 注册新页面: [${page.title}] -> ${page.url}`)
+        }
+      },
+      getPages: () => registeredPages
+    })
 
     // 辅助函数：根据 config 自动生成简单的 JSON Schema
     const generateSchemaFromConfig = (config: any): any => {
@@ -139,6 +175,37 @@ export default definePlugin({
         res.json({ success: true, token: currentToken })
       } else {
         res.status(401).json({ error: 'Invalid Token' })
+      }
+    })
+
+    // API: 获取注册的自定义页面
+    app.get('/api/webui/pages', authMiddleware, (req, res) => {
+      res.json(registeredPages)
+    })
+
+    // API: 获取所有连接 Bot 的群列表
+    app.get('/api/bots/groups', authMiddleware, async (req, res) => {
+      try {
+        const groupsMap = new Map<number, { group_id: number; group_name: string; bot_id: number }>()
+        for (const bot of ctx.bots) {
+          try {
+            const list = await bot.getGroupList()
+            for (const g of list) {
+              if (!groupsMap.has(g.group_id)) {
+                groupsMap.set(g.group_id, {
+                  group_id: g.group_id,
+                  group_name: g.group_name || `群 ${g.group_id}`,
+                  bot_id: bot.bot_id
+                })
+              }
+            }
+          } catch (botErr: any) {
+            ctx.logger.error(`获取 Bot ${bot.nickname} (${bot.bot_id}) 的群列表失败: ${botErr.message}`)
+          }
+        }
+        res.json(Array.from(groupsMap.values()))
+      } catch (err: any) {
+        res.status(500).json({ error: err.message })
       }
     })
 
@@ -233,12 +300,18 @@ export default definePlugin({
     })
 
     // 默认路由：兜底指向前端页面
-    app.use((req, res) => {
-      if (req.method === 'GET' && fs.existsSync(path.join(publicDir, 'index.html'))) {
-        res.sendFile(path.join(publicDir, 'index.html'))
-      } else {
-        res.status(404).send('WebUI 静态资源尚未就绪，请先创建 public/index.html')
-      }
+    // 使用 setImmediate 延迟注册，以便让其他插件优先注册 API 路由
+    setImmediate(() => {
+      app.use((req, res, next) => {
+        if (req.path.startsWith('/api/')) {
+          return next()
+        }
+        if (req.method === 'GET' && fs.existsSync(path.join(publicDir, 'index.html'))) {
+          res.sendFile(path.join(publicDir, 'index.html'))
+        } else {
+          res.status(404).send('WebUI 静态资源尚未就绪，请先创建 public/index.html')
+        }
+      })
     })
 
     let server: Server

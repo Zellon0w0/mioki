@@ -10,15 +10,17 @@
   "mioki": {
     "prefix": "~",
     "owners": [
-      1141284758,
-      536596616
+      123456789
     ],
     "admins": [],
     "plugins": [
-      "like",
+      "点赞",
       "qzone",
       "webui",
-      "chatgpt"
+      "chatgpt",
+      "天气",
+      "白名单管理",
+      "菜单"
     ],
     "log_level": "info",
     "plugins_dir": "../plugins",
@@ -29,8 +31,8 @@
       "name": "bot1",
       "protocol": "ws",
       "port": 3001,
-      "host": "192.168.11.107",
-      "token": "zellon114514"
+      "host": "127.0.0.1",
+      "token": "your-napcat-token"
     }]
   }
 }

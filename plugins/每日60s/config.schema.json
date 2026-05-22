@@ -1,0 +1,35 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "每日60s 插件配置",
+  "description": "每日60秒读懂世界新闻推送配置",
+  "type": "object",
+  "properties": {
+    "enabled": {
+      "title": "启用状态",
+      "type": "boolean",
+      "default": true,
+      "description": "是否启用每日60s插件"
+    },
+    "newsApi": {
+      "title": "新闻 API 地址",
+      "type": "string",
+      "default": "https://60s.viki.moe/v2",
+      "description": "获取 60s 新闻图片的 API 基础请求路径"
+    },
+    "time": {
+      "title": "推送时间 (Cron)",
+      "type": "string",
+      "default": "0 8 * * *",
+      "description": "定时推送的 Cron 表达式，如每天早上8点为 '0 8 * * *'"
+    },
+    "whitelist": {
+      "title": "推送及白名单群组",
+      "type": "array",
+      "items": {
+        "type": "integer"
+      },
+      "description": "允许主动查询或接收定时推送的 QQ 群号，每行一个"
+    }
+  },
+  "required": ["newsApi", "time"]
+}

@@ -1,0 +1,31 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "关键词回复插件配置",
+  "description": "管理关键词自动回复插件的开启状态、群白名单和用户黑名单",
+  "type": "object",
+  "properties": {
+    "enabled": {
+      "title": "启用状态",
+      "type": "boolean",
+      "default": true,
+      "description": "是否开启本插件的自动回复处理"
+    },
+    "whitelist": {
+      "title": "群白名单",
+      "type": "array",
+      "items": {
+        "type": "integer"
+      },
+      "description": "允许使用此插件的 QQ 群号，留空表示全部允许，每行一个"
+    },
+    "blacklist": {
+      "title": "用户黑名单",
+      "type": "array",
+      "items": {
+        "type": "integer"
+      },
+      "description": "禁止触发或修改规则的 QQ 号，每行一个"
+    }
+  },
+  "required": ["enabled", "whitelist", "blacklist"]
+}

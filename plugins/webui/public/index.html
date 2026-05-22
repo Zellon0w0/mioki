@@ -47,7 +47,14 @@
       </div>
 
       <div class="sidebar-menu">
-        <h3 class="menu-title">插件列表</h3>
+        <div id="system-pages-section" class="hide">
+          <h3 class="menu-title">系统功能</h3>
+          <ul id="system-pages-list" class="menu-list" style="margin-bottom: 1.5rem;">
+            <!-- System pages injected here -->
+          </ul>
+        </div>
+
+        <h3 class="menu-title">插件配置</h3>
         <ul id="plugin-list" class="menu-list">
           <!-- Plugin list items injected here -->
         </ul>
@@ -93,6 +100,11 @@
         </div>
       </section>
     </main>
+
+    <!-- Dynamic pages container -->
+    <div id="iframe-container" class="hide" style="width: 100%; height: 100%; overflow: hidden;">
+      <iframe id="page-iframe" src="" style="width: 100%; height: 100%; border: none;"></iframe>
+    </div>
   </div>
 
   <!-- Toast Notification -->
