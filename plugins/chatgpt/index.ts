@@ -219,6 +219,7 @@ const defaultConfig: PluginConfig = {
 
 // 全局浏览器实例
 let globalBrowser: Browser | null = null;
+let browserLaunchPromise: Promise<Browser> | null = null;
 
 // 初始化 Markdown 解析器
 const md = new MarkdownIt();
@@ -228,9 +229,12 @@ md.use(mk);
  * 获取浏览器实例
  */
 async function getBrowserInstance(): Promise<Browser> {
-  if (!globalBrowser) {
+  if (globalBrowser) {
+    return globalBrowser;
+  }
+  if (!browserLaunchPromise) {
     console.log('启动浏览器实例...');
-    globalBrowser = await puppeteer.launch({
+    browserLaunchPromise = puppeteer.launch({
       executablePath: '/usr/bin/chromium',
       headless: true,
       args: [
@@ -241,15 +245,37 @@ async function getBrowserInstance(): Promise<Browser> {
         '--disable-software-rasterizer'
       ],
       timeout: 60000
+    }).then(b => {
+      globalBrowser = b;
+      browserLaunchPromise = null;
+      return b;
+    }).catch(err => {
+      browserLaunchPromise = null;
+      throw err;
     });
   }
-  return globalBrowser;
+  return browserLaunchPromise;
 }
 
 /**
  * 关闭浏览器实例
  */
 async function closeBrowserInstance() {
+  if (browserLaunchPromise) {
+    console.log('等待正在启动的浏览器实例并关闭...');
+    try {
+      const b = await browserLaunchPromise;
+      const pages = await b.pages();
+      await Promise.all(pages.map((page: Page) => page.close()));
+      await b.close();
+    } catch (err) {
+      console.error('关闭正在启动的浏览器时出错:', err);
+    } finally {
+      browserLaunchPromise = null;
+      globalBrowser = null;
+    }
+    return;
+  }
   if (globalBrowser) {
     console.log('关闭浏览器实例...');
     try {
@@ -282,6 +308,7 @@ function cleanupTempFolder() {
  */
 async function renderMarkdownToImage(markdown: string): Promise<string> {
   console.log('渲染Markdown，长度:', markdown.length);
+  let page: Page | null = null;
   
   try {
     const renderedMarkdown = md.render(markdown);
@@ -353,7 +380,7 @@ async function renderMarkdownToImage(markdown: string): Promise<string> {
     `;
 
     const browser = await getBrowserInstance();
-    const page = await browser.newPage();
+    page = await browser.newPage();
 
     await page.setViewport({
       width: totalWidth,
@@ -394,11 +421,18 @@ async function renderMarkdownToImage(markdown: string): Promise<string> {
     }
     const imagePath = join(tempDir, `${Date.now()}.png`);
     await page.screenshot({ path: imagePath, type: 'png', fullPage: true, captureBeyondViewport: true });
-    await page.close();
     return imagePath;
   } catch (error) {
     console.error('渲染Markdown出错:', error);
     throw error;
+  } finally {
+    if (page) {
+      try {
+        await page.close();
+      } catch (err) {
+        console.error('关闭页面出错:', err);
+      }
+    }
   }
 }
 

@@ -214,7 +214,7 @@ export default definePlugin({
         enabled: true,
         whitelist: [],
         browserPath: '/usr/bin/chromium',
-        apiKey: '88ab2ca23dc4d78eb39cfb9b09c529e7'
+        apiKey: ''
       }
 
       if (!existsSync(configPath)) {
@@ -315,6 +315,10 @@ export default definePlugin({
       if (text.startsWith('#视奸')) {
         let query = text.replace('#视奸', '').trim()
         if (!query) return // 忽略只有指令的情况
+
+        if (!config.apiKey) {
+          return e.reply('未配置 Steam API 密钥，请在 WebUI 面板中配置后再试。')
+        }
 
         let steamId = query
         // 如果查询的是昵称，则转换为 SteamID

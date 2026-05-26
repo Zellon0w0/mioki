@@ -10,6 +10,66 @@ interface WebUIConfig {
   token: string
 }
 
+// IP 提取助手，支持反向代理获取真实的客户端 IP
+const getClientIp = (req: express.Request): string => {
+  const forwarded = req.headers['x-forwarded-for']
+  if (forwarded) {
+    if (Array.isArray(forwarded)) {
+      if (forwarded.length > 0) return forwarded[0].trim()
+    } else if (typeof forwarded === 'string') {
+      return forwarded.split(',')[0].trim()
+    }
+  }
+  return req.ip || req.socket.remoteAddress || 'unknown'
+}
+
+// 基于 SHA-256 Hash 的 Timing-Safe Comparison，防时序攻击，支持任意长度 Token 的安全比对
+const timingSafeCompare = (a: string, b: string): boolean => {
+  if (typeof a !== 'string' || typeof b !== 'string') return false
+  try {
+    const aHash = crypto.createHash('sha256').update(a).digest()
+    const bHash = crypto.createHash('sha256').update(b).digest()
+    return crypto.timingSafeEqual(aHash, bHash)
+  } catch {
+    return false
+  }
+}
+
+// 内存限流器
+class RateLimiter {
+  private ipWindow = new Map<string, { count: number; resetTime: number }>()
+
+  constructor(
+    private limit: number,
+    private windowMs: number
+  ) {}
+
+  public check(ip: string): { allowed: boolean; remaining: number; resetTime: number } {
+    const now = Date.now()
+    const record = this.ipWindow.get(ip)
+
+    if (!record || now > record.resetTime) {
+      const newRecord = { count: 1, resetTime: now + this.windowMs }
+      this.ipWindow.set(ip, newRecord)
+      return { allowed: true, remaining: this.limit - 1, resetTime: newRecord.resetTime }
+    }
+
+    record.count++
+    const allowed = record.count <= this.limit
+    const remaining = Math.max(0, this.limit - record.count)
+    return { allowed, remaining, resetTime: record.resetTime }
+  }
+
+  public cleanup() {
+    const now = Date.now()
+    for (const [ip, record] of this.ipWindow.entries()) {
+      if (now > record.resetTime) {
+        this.ipWindow.delete(ip)
+      }
+    }
+  }
+}
+
 export default definePlugin({
   name: 'webui',
   version: '1.0.0',
@@ -49,6 +109,11 @@ export default definePlugin({
 
     const { port, token } = webuiConfig
 
+    // 弱 Token 安全检测与警告
+    if (token && token.length < 8) {
+      ctx.logger.warn('⚠️ [WebUI 安全警告] 您设置的访问 Token 长度少于 8 位，极易被暴力破解，强烈建议在 config.json 中修改为更长、更复杂的 Token 或使用默认生成的强 Token！')
+    }
+
     ctx.logger.info(`WebUI 服务将在端口 ${port} 启动`)
 
     // 首次启动，延时通过私聊发送 token 给主人
@@ -67,6 +132,66 @@ export default definePlugin({
     const app = express()
     app.use(express.json())
 
+    // 注入基础 HTTP 安全响应头
+    app.use((req, res, next) => {
+      res.setHeader('X-Frame-Options', 'SAMEORIGIN')
+      res.setHeader('X-Content-Type-Options', 'nosniff')
+      res.setHeader('X-XSS-Protection', '1; mode=block')
+      res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin')
+      next()
+    })
+
+    // 初始化内存限流器
+    const loginLimiter = new RateLimiter(5, 60 * 1000) // 登录限制: 1分钟5次尝试
+    const apiLimiter = new RateLimiter(100, 60 * 1000)  // 基础 API 限流: 1分钟100次尝试
+
+    // 定时清理已过期的限流记录，防止内存泄漏
+    const cleanupInterval = setInterval(() => {
+      loginLimiter.cleanup()
+      apiLimiter.cleanup()
+    }, 5 * 60 * 1000)
+    cleanupInterval.unref()
+
+    // 基础 API 限流中间件
+    app.use('/api', (req, res, next) => {
+      const ip = getClientIp(req)
+      const { allowed, remaining, resetTime } = apiLimiter.check(ip)
+
+      res.setHeader('X-RateLimit-Limit', 100)
+      res.setHeader('X-RateLimit-Remaining', remaining)
+      res.setHeader('X-RateLimit-Reset', Math.ceil(resetTime / 1000))
+
+      if (!allowed) {
+        ctx.logger.warn(`[WebUI 安全拦截] 客户端 IP: ${ip} 触发 API 接口频率限制`)
+        return res.status(429).json({
+          error: 'Too Many Requests',
+          message: '请求过于频繁，请稍后再试。',
+          retryAfter: Math.ceil((resetTime - Date.now()) / 1000)
+        })
+      }
+      next()
+    })
+
+    // 登录专属限流中间件
+    const loginRateLimitMiddleware = (req: express.Request, res: express.Response, next: express.NextFunction) => {
+      const ip = getClientIp(req)
+      const { allowed, remaining, resetTime } = loginLimiter.check(ip)
+
+      res.setHeader('X-RateLimit-Limit', 5)
+      res.setHeader('X-RateLimit-Remaining', remaining)
+      res.setHeader('X-RateLimit-Reset', Math.ceil(resetTime / 1000))
+
+      if (!allowed) {
+        ctx.logger.warn(`[WebUI 安全拦截] 客户端 IP: ${ip} 连续尝试登录失败被拦截`)
+        return res.status(429).json({
+          error: 'Too Many Requests',
+          message: '登录尝试次数过多，已被临时锁定，请 1 分钟后重试。',
+          retryAfter: Math.ceil((resetTime - Date.now()) / 1000)
+        })
+      }
+      next()
+    }
+
     // 静态资源目录
     const publicDir = path.join(pluginDir, 'public')
     if (!fs.existsSync(publicDir)) {
@@ -81,7 +206,15 @@ export default definePlugin({
       if (!pluginName || pluginName.includes('..') || pluginName.includes('/') || pluginName.includes('\\')) {
         return next()
       }
-      const targetDir = path.join(getAbsPluginDir(), pluginName, 'public')
+      const safePluginDir = getAbsPluginDir()
+      const targetDir = path.resolve(safePluginDir, pluginName, 'public')
+      
+      // 强化防路径穿越：检验绝对路径必须位于插件目录下
+      if (!targetDir.startsWith(safePluginDir)) {
+        ctx.logger.warn(`[WebUI 安全拦截] 检测到非法的跨目录静态资源请求, 插件名: ${pluginName}`)
+        return next()
+      }
+      
       if (fs.existsSync(targetDir)) {
         return express.static(targetDir)(req, res, next)
       }
@@ -102,7 +235,7 @@ export default definePlugin({
         }
       } catch {}
 
-      if (reqToken === currentToken) {
+      if (reqToken && timingSafeCompare(reqToken, currentToken)) {
         return next()
       }
       res.status(401).json({ error: 'Unauthorized' })
@@ -161,7 +294,7 @@ export default definePlugin({
     }
 
     // API: 登录验证
-    app.post('/api/login', (req, res) => {
+    app.post('/api/login', loginRateLimitMiddleware, (req, res) => {
       const { token: inputToken } = req.body
       let currentToken = token
       try {
@@ -171,7 +304,7 @@ export default definePlugin({
         }
       } catch {}
 
-      if (inputToken === currentToken) {
+      if (inputToken && timingSafeCompare(inputToken, currentToken)) {
         res.json({ success: true, token: currentToken })
       } else {
         res.status(401).json({ error: 'Invalid Token' })
@@ -323,8 +456,9 @@ export default definePlugin({
       ctx.logger.error(`WebUI 服务器启动失败: ${err.message}`)
     }
 
-    // 卸载插件时清理服务器
+    // 卸载插件时清理服务器与限流定时器
     return () => {
+      clearInterval(cleanupInterval)
       if (server) {
         server.close(() => {
           ctx.logger.info('WebUI 服务器已关闭')

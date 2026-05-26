@@ -48,7 +48,8 @@ export default definePlugin({
       ctx.match(e, {
         赞我: async () => {
           let count = 0
-          while (await ctx.bot.sendLike(e.sender.user_id, 10)) count += 10
+          const success = await ctx.bot.sendLike(e.sender.user_id, 10)
+          if (success) count = 10
           await e.addReaction(count > 0 ? '66' : '67')
         },
       })

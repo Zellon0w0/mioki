@@ -650,11 +650,28 @@ function renderForm(schema, config, container, prefixPath = '') {
         }
       }
     } 
+    else if (Array.isArray(prop.enum)) {
+      wrapper.className = 'form-group'
+      const optionsHtml = prop.enum.map((val, idx) => {
+        const name = (prop.enumNames && prop.enumNames[idx]) || val
+        const selected = currentValue === val ? 'selected' : ''
+        return `<option value="${val}" ${selected}>${name}</option>`
+      }).join('')
+      
+      wrapper.innerHTML = `
+        <label for="${fieldId}">${prop.title || key}</label>
+        <select id="${fieldId}" data-path="${dataPath}" data-schema-type="${prop.type}">
+          ${optionsHtml}
+        </select>
+        ${prop.description ? `<div class="description">${prop.description}</div>` : ''}
+      `
+      container.appendChild(wrapper)
+    }
     else if (prop.type === 'integer' || prop.type === 'number') {
       wrapper.className = 'form-group'
       wrapper.innerHTML = `
         <label for="${fieldId}">${prop.title || key}</label>
-        <input type="number" id="${fieldId}" data-path="${dataPath}" value="${currentValue !== undefined ? currentValue : ''}" step="${prop.type === 'integer' ? '1' : 'any'}" placeholder="${prop.description || ''}">
+        <input type="number" id="${fieldId}" data-path="${dataPath}" data-schema-type="${prop.type}" value="${currentValue !== undefined ? currentValue : ''}" step="${prop.type === 'integer' ? '1' : 'any'}" placeholder="${prop.description || ''}">
         ${prop.description ? `<div class="description">${prop.description}</div>` : ''}
       `
       container.appendChild(wrapper)
@@ -676,7 +693,7 @@ function renderForm(schema, config, container, prefixPath = '') {
         
         wrapper.innerHTML = `
           <label for="${fieldId}">${prop.title || key}</label>
-          <select id="${fieldId}" data-path="${dataPath}" class="current-model-select">
+          <select id="${fieldId}" data-path="${dataPath}" class="current-model-select" data-schema-type="${prop.type}">
             ${optionsHtml}
           </select>
           ${prop.description ? `<div class="description">${prop.description}</div>` : ''}
@@ -689,7 +706,7 @@ function renderForm(schema, config, container, prefixPath = '') {
         
         wrapper.innerHTML = `
           <label for="${fieldId}">${prop.title || key}</label>
-          <select id="${fieldId}" data-path="${dataPath}" class="current-api-select">
+          <select id="${fieldId}" data-path="${dataPath}" class="current-api-select" data-schema-type="${prop.type}">
             ${optionsHtml}
           </select>
           ${prop.description ? `<div class="description">${prop.description}</div>` : ''}
@@ -699,7 +716,7 @@ function renderForm(schema, config, container, prefixPath = '') {
       else {
         wrapper.innerHTML = `
           <label for="${fieldId}">${prop.title || key}</label>
-          <input type="${isSecret ? 'password' : 'text'}" id="${fieldId}" data-path="${dataPath}" value="${currentValue !== undefined ? currentValue : ''}" placeholder="${prop.description || ''}">
+          <input type="${isSecret ? 'password' : 'text'}" id="${fieldId}" data-path="${dataPath}" data-schema-type="${prop.type}" value="${currentValue !== undefined ? currentValue : ''}" placeholder="${prop.description || ''}">
           ${prop.description ? `<div class="description">${prop.description}</div>` : ''}
         `
         container.appendChild(wrapper)
@@ -731,11 +748,12 @@ configForm.addEventListener('submit', async (e) => {
     
     inputs.forEach(input => {
       const path = input.getAttribute('data-path')
+      const schemaType = input.getAttribute('data-schema-type')
       let val
       
       if (input.type === 'checkbox') {
         val = input.checked
-      } else if (input.type === 'number') {
+      } else if (input.type === 'number' || schemaType === 'integer' || schemaType === 'number') {
         val = input.value === '' ? undefined : Number(input.value)
       } else if (input.getAttribute('data-type') === 'group-list') {
         const text = input.value.trim()

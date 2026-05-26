@@ -28,7 +28,7 @@
       "title": "Steam 接口 API Key",
       "type": "string",
       "format": "password",
-      "default": "88ab2ca23dc4d78eb39cfb9b09c529e7",
+      "default": "",
       "description": "Steam/Viki 接口调用的 API 密钥"
     }
   },

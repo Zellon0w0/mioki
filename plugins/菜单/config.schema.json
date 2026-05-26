@@ -70,6 +70,20 @@
               "type": "string"
             },
             "description": "该分组包含的指令列表，每行一个"
+          },
+          "order": {
+            "title": "排序序号",
+            "type": "integer",
+            "default": 10,
+            "description": "自定义选项卡排序，数字越小越靠前"
+          },
+          "width": {
+            "title": "选项卡宽度 (大小)",
+            "type": "integer",
+            "default": 1,
+            "enum": [1, 2],
+            "enumNames": ["半宽 (单栏)", "全宽 (双栏)"],
+            "description": "自定义该选项卡的尺寸。在 PC 布局下，半宽占一栏，全宽占两栏。"
           }
         },
         "required": ["name"]

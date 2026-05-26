@@ -174,9 +174,14 @@ export default definePlugin({
               ctx.segment.image(video.cover)
             ], true)
             
-            const videoPath = await downloadVideo(video.photo)
-            await e.reply(ctx.segment.video(`file://${videoPath}`))
-            cleanupFile(ctx, videoPath)
+            try {
+              const videoPath = await downloadVideo(video.photo)
+              await e.reply(ctx.segment.video(`file://${videoPath}`))
+              cleanupFile(ctx, videoPath)
+            } catch (videoError: any) {
+              ctx.logger.error(`[视频解析] 视频下载/发送失败: ${videoError.message}`)
+              await e.reply(`视频发送失败: ${videoError.message}`, true)
+            }
           }
         } catch (error) {
           ctx.logger.error(`[视频解析] 视频/图片发送失败: ${error}`)
@@ -187,16 +192,68 @@ export default definePlugin({
 })
 
 /**
- * 通用视频下载函数
+ * 通用视频下载函数，加了大小和超时限制防止服务器卡死或内存溢出
  */
-async function downloadVideo(url: string): Promise<string> {
+async function downloadVideo(
+  url: string, 
+  maxBytes: number = 30 * 1024 * 1024, 
+  timeoutMs: number = 60000
+): Promise<string> {
   const tempPath = path.join(tmpdir(), `video_${Date.now()}.mp4`)
-  const response = await fetch(url)
-  if (!response.body) throw new Error('无法获取视频流')
-  
-  // @ts-ignore
-  await pipeline(response.body, createWriteStream(tempPath))
-  return tempPath
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
+
+  try {
+    const response = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+      }
+    })
+
+    if (!response.ok) {
+      throw new Error(`HTTP 错误: ${response.status} ${response.statusText}`)
+    }
+
+    const contentLength = response.headers.get('content-length')
+    if (contentLength) {
+      const size = parseInt(contentLength, 10)
+      if (size > maxBytes) {
+        throw new Error(`视频文件过大 (${(size / 1024 / 1024).toFixed(1)}MB)，已跳过下载 (最大限制为 ${(maxBytes / 1024 / 1024).toFixed(1)}MB)`)
+      }
+    }
+
+    if (!response.body) {
+      throw new Error('无法获取视频流')
+    }
+
+    let downloadedBytes = 0
+    const limitTransform = async function* (source: any) {
+      for await (const chunk of source) {
+        downloadedBytes += chunk.length
+        if (downloadedBytes > maxBytes) {
+          throw new Error(`视频文件过大，已终止下载 (最大限制为 ${(maxBytes / 1024 / 1024).toFixed(1)}MB)`)
+        }
+        yield chunk
+      }
+    }
+
+    // @ts-ignore
+    await pipeline(response.body, limitTransform, createWriteStream(tempPath))
+    return tempPath
+  } catch (err: any) {
+    if (existsSync(tempPath)) {
+      try {
+        unlinkSync(tempPath)
+      } catch {}
+    }
+    if (err.name === 'AbortError') {
+      throw new Error(`下载视频超时 (${timeoutMs / 1000} 秒)`)
+    }
+    throw err
+  } finally {
+    clearTimeout(timeoutId)
+  }
 }
 
 /**

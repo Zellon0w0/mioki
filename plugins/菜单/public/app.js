@@ -1,118 +1,71 @@
-import { definePlugin, getAbsPluginDir } from 'mioki'
-import puppeteer from 'puppeteer-core'
-import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, unlinkSync } from 'node:fs'
-import { join } from 'node:path'
-import crypto from 'node:crypto'
-import type { Browser } from 'puppeteer-core'
-import type { GroupMessageEvent, PrivateMessageEvent } from 'napcat-sdk'
+// WebUI Menu Preview Controller
 
-const PLUGIN_NAME = '菜单'
-const PLUGIN_VERSION = '1.0.0'
+// Get auth token from parent window
+const token = localStorage.getItem('mioki_token') || '';
 
-interface PluginConfig {
-  enabled: boolean
-  command: string
-  title: string
-  subtitle: string
-  theme: 'eva-02' | 'hatsune' | 'cyberpunk'
-  whitelist: number[]
-  categories: Array<{
-    name: string
-    badge?: string
-    desc?: string
-    commands: string[]
-    order?: number
-    width?: number
-  }>
+// Mock info for preview rendering
+const mockAvatarUrl = 'https://p.qlogo.cn/gh/10001/10001/100';
+const mockNickname = 'Mioki Bot';
+
+// State
+let pluginConfig = null;
+const PLUGIN_NAME = '菜单';
+
+// DOM Elements
+const configForm = document.getElementById('config-form');
+const categoriesContainer = document.getElementById('categories-container');
+const addCategoryBtn = document.getElementById('add-category-btn');
+const resetBtn = document.getElementById('reset-btn');
+const previewPngBtn = document.getElementById('preview-png-btn');
+const iframe = document.getElementById('html-preview-iframe');
+
+// Modal DOM
+const pngModal = document.getElementById('png-modal');
+const renderedPngImg = document.getElementById('rendered-png-img');
+const modalLoadingText = pngModal.querySelector('.modal-loading-text');
+const closeModalBtns = pngModal.querySelectorAll('.close-modal-btn');
+
+// Toast Notification
+const toast = document.getElementById('toast');
+function showToast(message, type = 'success') {
+  const toastMsg = toast.querySelector('.toast-message');
+  toastMsg.textContent = message;
+  toast.className = `toast show ${type}`;
+  setTimeout(() => {
+    toast.classList.remove('show');
+  }, 4000);
 }
 
-let browser: Browser | null = null
-let browserLaunchPromise: Promise<Browser> | null = null
-
-function getChromeCandidates(): string[] {
-  const localAppData = process.env.LOCALAPPDATA
-  const programFiles = process.env.PROGRAMFILES
-  const programFilesX86 = process.env['PROGRAMFILES(X86)']
-
-  return [
-    process.env.PUPPETEER_EXECUTABLE_PATH,
-    process.env.CHROME_PATH,
-    '/usr/bin/chromium',
-    '/usr/bin/chromium-browser',
-    '/usr/bin/google-chrome',
-    '/usr/bin/google-chrome-stable',
-    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-    programFiles ? join(programFiles, 'Google/Chrome/Application/chrome.exe') : '',
-    programFilesX86 ? join(programFilesX86, 'Google/Chrome/Application/chrome.exe') : '',
-    localAppData ? join(localAppData, 'Google/Chrome/Application/chrome.exe') : '',
-  ].filter((candidate): candidate is string => Boolean(candidate))
+// Check auth & redirect if missing
+if (!token) {
+  showToast('未登录 WebUI，无法加载配置', 'error');
+  // If in iframe, notify parent or show message
 }
 
-function findChromeExecutable(): string {
-  const executablePath = getChromeCandidates().find((candidate) => existsSync(candidate))
-  if (!executablePath) {
-    throw new Error('未找到 Chrome/Chromium，请设置 PUPPETEER_EXECUTABLE_PATH 或 CHROME_PATH')
-  }
-  return executablePath
-}
-
-async function getBrowser(): Promise<Browser> {
-  if (browser) {
-    return browser
-  }
-  if (!browserLaunchPromise) {
-    browserLaunchPromise = puppeteer.launch({
-      executablePath: findChromeExecutable(),
-      headless: true,
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-gpu',
-        '--no-first-run',
-        '--no-zygote',
-        '--font-render-hinting=none',
-      ],
-      defaultViewport: {
-        width: 850,
-        height: 1200,
-        deviceScaleFactor: 2,
-      },
-    }).then(b => {
-      browser = b
-      browserLaunchPromise = null
-      return b
-    }).catch(err => {
-      browserLaunchPromise = null
-      throw err
-    })
-  }
-  return browserLaunchPromise
-}
-
-function escapeHtml(str: string): string {
-  if (!str) return ''
+// ----------------- Core HTML & CSS Render Logic (Cloned from Backend) -----------------
+function escapeHtml(str) {
+  if (!str) return '';
   return str
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;')
+    .replace(/'/g, '&#039;');
 }
 
-export function renderHtml(config: PluginConfig, avatarUrl: string, nickname: string): string {
+function renderHtmlPreview(config, avatarUrl, nickname) {
   const sortedCategories = [...(config.categories || [])].sort(
     (a, b) => (a.order ?? 10) - (b.order ?? 10)
-  )
+  );
 
   const categoriesHtml = sortedCategories
     .map((cat) => {
-      const name = escapeHtml(cat.name)
-      const badge = cat.badge ? `<span class="category-badge">${escapeHtml(cat.badge)}</span>` : ''
-      const desc = cat.desc ? `<div class="category-desc">${escapeHtml(cat.desc)}</div>` : ''
+      const name = escapeHtml(cat.name);
+      const badge = cat.badge ? `<span class="category-badge">${escapeHtml(cat.badge)}</span>` : '';
+      const desc = cat.desc ? `<div class="category-desc">${escapeHtml(cat.desc)}</div>` : '';
       const commandsList = (cat.commands || [])
         .map((cmd) => `<span class="cmd-chip">${escapeHtml(cmd)}</span>`)
-        .join('')
+        .join('');
 
       return `
         <div class="category-card" style="grid-column: span ${cat.width || 1};">
@@ -125,18 +78,16 @@ export function renderHtml(config: PluginConfig, avatarUrl: string, nickname: st
             ${commandsList}
           </div>
         </div>
-      `
+      `;
     })
-    .join('')
+    .join('');
 
-  const totalCommands = sortedCategories.reduce((acc, cat) => acc + (cat.commands?.length || 0), 0)
+  const totalCommands = sortedCategories.reduce((acc, cat) => acc + (cat.commands?.length || 0), 0);
 
-  // Style templates based on theme
-  let themeCss = ''
-  let layoutHtml = ''
+  let themeCss = '';
+  let layoutHtml = '';
 
   if (config.theme === 'eva-02') {
-    // Neon Genesis Evangelion Unit-02 (二号机) Theme
     themeCss = `
       :root {
         --bg-color: #121318;
@@ -176,8 +127,6 @@ export function renderHtml(config: PluginConfig, avatarUrl: string, nickname: st
         height: 4px;
         background: repeating-linear-gradient(-45deg, var(--accent-yellow), var(--accent-yellow) 10px, #121318 10px, #121318 20px);
       }
-      
-      /* Header styles */
       .header-card {
         background: rgba(26, 27, 35, 0.95);
         border: 1px solid var(--border-color);
@@ -240,8 +189,6 @@ export function renderHtml(config: PluginConfig, avatarUrl: string, nickname: st
         color: var(--accent-orange);
         font-weight: bold;
       }
-
-      /* Card styles */
       .category-card {
         background: var(--card-bg);
         border: 1px solid rgba(255, 61, 0, 0.2);
@@ -291,8 +238,6 @@ export function renderHtml(config: PluginConfig, avatarUrl: string, nickname: st
         font-weight: 600;
         font-family: monospace;
       }
-
-      /* Footer */
       .footer-card {
         display: flex;
         justify-content: space-between;
@@ -309,7 +254,7 @@ export function renderHtml(config: PluginConfig, avatarUrl: string, nickname: st
       .footer-side strong {
         color: var(--accent-yellow);
       }
-    `
+    `;
     layoutHtml = `
       <div class="menu-container">
         <div class="header-card">
@@ -320,27 +265,24 @@ export function renderHtml(config: PluginConfig, avatarUrl: string, nickname: st
             <div class="header-subtitle">${escapeHtml(config.subtitle || 'TACTICAL ASSISTANT')}</div>
             <h1>${escapeHtml(config.title || nickname)}</h1>
             <div class="header-meta">
-              COMMANDS LOADED: <span>${totalCommands}</span> UNITS // SECTORS: <span>${config.categories.length}</span> ACTIVE
+              COMMANDS LOADED: <span>${totalCommands}</span> UNITS // SECTORS: <span>${sortedCategories.length}</span> ACTIVE
             </div>
           </div>
         </div>
-
         <div class="menu-grid">
           ${categoriesHtml}
         </div>
-
         <div class="footer-card">
           <div class="footer-side">
-            SYSTEM: <strong>MIOKI</strong>
+            FRAMEWORK: <strong>MIOKI // VER 1.0.0</strong>
           </div>
           <div class="footer-side">
-            <strong>EVANGELION</strong>
+            PILOT: <strong>${escapeHtml(nickname)} // STATUS_NORMAL</strong>
           </div>
         </div>
       </div>
-    `
+    `;
   } else if (config.theme === 'hatsune') {
-    // Miku Cyan glassmorphism theme
     themeCss = `
       :root {
         --bg-color: #f0f7f6;
@@ -369,8 +311,6 @@ export function renderHtml(config: PluginConfig, avatarUrl: string, nickname: st
         border-radius: 32px;
         box-shadow: 0 20px 50px rgba(0, 196, 180, 0.05);
       }
-      
-      /* Header styles */
       .header-card {
         background: var(--card-bg);
         backdrop-filter: blur(12px);
@@ -417,8 +357,6 @@ export function renderHtml(config: PluginConfig, avatarUrl: string, nickname: st
         font-size: 13px;
         color: var(--text-muted);
       }
-
-      /* Card styles */
       .category-card {
         background: var(--card-bg);
         backdrop-filter: blur(10px);
@@ -464,8 +402,6 @@ export function renderHtml(config: PluginConfig, avatarUrl: string, nickname: st
         border-radius: 100px;
         font-weight: 500;
       }
-
-      /* Footer */
       .footer-card {
         display: flex;
         justify-content: space-between;
@@ -484,7 +420,7 @@ export function renderHtml(config: PluginConfig, avatarUrl: string, nickname: st
         color: var(--accent-teal);
         font-weight: 700;
       }
-    `
+    `;
     layoutHtml = `
       <div class="menu-container">
         <div class="header-card">
@@ -495,15 +431,13 @@ export function renderHtml(config: PluginConfig, avatarUrl: string, nickname: st
             <div class="header-subtitle">${escapeHtml(config.title || 'MIOKU ASSISTANT')}</div>
             <h1>${escapeHtml(config.subtitle || nickname)}</h1>
             <div class="header-meta">
-              共 ${config.categories.length} 个功能分类，包含 ${totalCommands} 个指令
+              共 ${sortedCategories.length} 个功能分类，包含 ${totalCommands} 个指令
             </div>
           </div>
         </div>
-
         <div class="menu-grid">
           ${categoriesHtml}
         </div>
-
         <div class="footer-card">
           <div class="footer-side">
             Framework: <strong>Mioki</strong>
@@ -513,9 +447,8 @@ export function renderHtml(config: PluginConfig, avatarUrl: string, nickname: st
           </div>
         </div>
       </div>
-    `
+    `;
   } else {
-    // Cyberpunk theme
     themeCss = `
       :root {
         --bg-color: #05060b;
@@ -551,8 +484,6 @@ export function renderHtml(config: PluginConfig, avatarUrl: string, nickname: st
         height: 2px;
         background: linear-gradient(90deg, var(--accent-magenta), var(--accent-cyan));
       }
-      
-      /* Header styles */
       .header-card {
         background: var(--card-bg);
         border: 2px solid var(--accent-cyan);
@@ -610,8 +541,6 @@ export function renderHtml(config: PluginConfig, avatarUrl: string, nickname: st
         color: var(--text-muted);
         font-family: monospace;
       }
-
-      /* Card styles */
       .category-card {
         background: var(--card-bg);
         border: 1px solid var(--border-color);
@@ -669,8 +598,6 @@ export function renderHtml(config: PluginConfig, avatarUrl: string, nickname: st
         font-family: monospace;
         text-shadow: 0 0 5px rgba(0, 243, 255, 0.3);
       }
-
-      /* Footer */
       .footer-card {
         display: flex;
         justify-content: space-between;
@@ -686,7 +613,7 @@ export function renderHtml(config: PluginConfig, avatarUrl: string, nickname: st
       .footer-side strong {
         color: var(--accent-magenta);
       }
-    `
+    `;
     layoutHtml = `
       <div class="menu-container">
         <div class="header-card">
@@ -697,15 +624,13 @@ export function renderHtml(config: PluginConfig, avatarUrl: string, nickname: st
             <div class="header-subtitle">${escapeHtml(config.subtitle || 'CYBER ASSISTANT')}</div>
             <h1>${escapeHtml(config.title || nickname)}</h1>
             <div class="header-meta">
-              DB_COMMANDS: ${totalCommands} CELLS // CATEGORIES: ${config.categories.length} NODES
+              DB_COMMANDS: ${totalCommands} CELLS // CATEGORIES: ${sortedCategories.length} NODES
             </div>
           </div>
         </div>
-
         <div class="menu-grid">
           ${categoriesHtml}
         </div>
-
         <div class="footer-card">
           <div class="footer-side">
             CORE: <strong>MIOKI ENGINE</strong>
@@ -715,7 +640,7 @@ export function renderHtml(config: PluginConfig, avatarUrl: string, nickname: st
           </div>
         </div>
       </div>
-    `
+    `;
   }
 
   return `
@@ -756,230 +681,271 @@ export function renderHtml(config: PluginConfig, avatarUrl: string, nickname: st
       </div>
     </body>
     </html>
-  `
+  `;
 }
 
-export async function renderMenuImage(config: PluginConfig, avatarUrl: string, nickname: string): Promise<Buffer> {
-  const instance = await getBrowser()
-  const page = await instance.newPage()
+// ----------------- Core Page Controller -----------------
+
+// Live preview renderer
+function triggerLivePreview() {
+  const currentConfig = collectFormData();
+  const htmlContent = renderHtmlPreview(currentConfig, mockAvatarUrl, mockNickname);
+  
+  const doc = iframe.contentDocument || iframe.contentWindow.document;
+  doc.open();
+  doc.write(htmlContent);
+  doc.close();
+}
+
+// Collect data from visual inputs
+function collectFormData() {
+  const enabled = document.getElementById('field-enabled').checked;
+  const command = document.getElementById('field-command').value.trim();
+  const title = document.getElementById('field-title').value.trim();
+  const subtitle = document.getElementById('field-subtitle').value.trim();
+  const theme = document.getElementById('field-theme').value;
+
+  const categoryCards = categoriesContainer.querySelectorAll('.cat-item-card');
+  const categories = Array.from(categoryCards).map(card => {
+    const name = card.querySelector('.field-cat-name').value.trim();
+    const badge = card.querySelector('.field-cat-badge').value.trim();
+    const desc = card.querySelector('.field-cat-desc').value.trim();
+    const order = Number(card.querySelector('.field-cat-order').value) || 10;
+    const width = Number(card.querySelector('.field-cat-width').value) || 1;
+    const commandsText = card.querySelector('.field-cat-commands').value.trim();
+    const commands = commandsText ? commandsText.split('\n').map(c => c.trim()).filter(Boolean) : [];
+
+    return { name, badge, desc, order, width, commands };
+  });
+
+  return {
+    enabled,
+    command,
+    title,
+    subtitle,
+    theme,
+    whitelist: pluginConfig?.whitelist || [],
+    categories
+  };
+}
+
+// Render inputs from config
+function renderFormInputs(config) {
+  document.getElementById('field-enabled').checked = config.enabled !== false;
+  document.getElementById('field-command').value = config.command || '菜单';
+  document.getElementById('field-title').value = config.title || '';
+  document.getElementById('field-subtitle').value = config.subtitle || '';
+  document.getElementById('field-theme').value = config.theme || 'eva-02';
+
+  categoriesContainer.innerHTML = '';
+  
+  const sorted = [...(config.categories || [])].sort((a, b) => (a.order ?? 10) - (b.order ?? 10));
+  sorted.forEach((cat, index) => {
+    addCategoryCardDOM(cat, index);
+  });
+
+  triggerLivePreview();
+}
+
+function addCategoryCardDOM(cat = {}, index = 0) {
+  const card = document.createElement('div');
+  card.className = 'cat-item-card';
+  card.innerHTML = `
+    <div class="cat-card-header">
+      <span class="cat-card-title">卡片选项卡</span>
+      <div class="cat-card-actions">
+        <button type="button" class="btn btn-icon btn-sm move-up-btn" title="上移">▲</button>
+        <button type="button" class="btn btn-icon btn-sm move-down-btn" title="下移">▼</button>
+        <button type="button" class="btn btn-icon btn-sm text-danger remove-cat-btn" title="删除">🗑️</button>
+      </div>
+    </div>
+    <div class="cat-fields-grid">
+      <div class="form-group">
+        <label>分类名称</label>
+        <input type="text" class="field-cat-name" value="${cat.name || ''}" placeholder="例如: 60s 资讯" required>
+      </div>
+      <div class="form-group">
+        <label>分类标签 (Badge)</label>
+        <input type="text" class="field-cat-badge" value="${cat.badge || ''}" placeholder="例如: 60s">
+      </div>
+      <div class="form-group col-span-2">
+        <label>分类描述</label>
+        <input type="text" class="field-cat-desc" value="${cat.desc || ''}" placeholder="对该分类的简单说明">
+      </div>
+      <div class="form-group">
+        <label>排序序号</label>
+        <input type="number" class="field-cat-order" value="${cat.order ?? 10}" step="1">
+      </div>
+      <div class="form-group">
+        <label>选项卡宽度 (大小)</label>
+        <select class="field-cat-width">
+          <option value="1" ${cat.width === 1 ? 'selected' : ''}>半宽 (单栏)</option>
+          <option value="2" ${cat.width === 2 ? 'selected' : ''}>全宽 (双栏)</option>
+        </select>
+      </div>
+      <div class="form-group col-span-2">
+        <label>指令命令列表 (每行一个)</label>
+        <textarea class="field-cat-commands" rows="4" placeholder="每行输入一个指令">${Array.isArray(cat.commands) ? cat.commands.join('\n') : ''}</textarea>
+      </div>
+    </div>
+  `;
+
+  categoriesContainer.appendChild(card);
+
+  // Hook input changes to trigger real-time preview
+  card.querySelectorAll('input, select, textarea').forEach(el => {
+    el.addEventListener('input', triggerLivePreview);
+  });
+
+  // Up, Down, Delete buttons
+  card.querySelector('.remove-cat-btn').addEventListener('click', () => {
+    card.remove();
+    triggerLivePreview();
+  });
+
+  card.querySelector('.move-up-btn').addEventListener('click', () => {
+    const prev = card.previousElementSibling;
+    if (prev) {
+      categoriesContainer.insertBefore(card, prev);
+      // Swap order field values
+      const cardOrderInput = card.querySelector('.field-cat-order');
+      const prevOrderInput = prev.querySelector('.field-cat-order');
+      const temp = cardOrderInput.value;
+      cardOrderInput.value = prevOrderInput.value;
+      prevOrderInput.value = temp;
+      triggerLivePreview();
+    }
+  });
+
+  card.querySelector('.move-down-btn').addEventListener('click', () => {
+    const next = card.nextElementSibling;
+    if (next) {
+      categoriesContainer.insertBefore(next, card);
+      // Swap order field values
+      const cardOrderInput = card.querySelector('.field-cat-order');
+      const nextOrderInput = next.querySelector('.field-cat-order');
+      const temp = cardOrderInput.value;
+      cardOrderInput.value = nextOrderInput.value;
+      nextOrderInput.value = temp;
+      triggerLivePreview();
+    }
+  });
+}
+
+// ----------------- Fetch / Save API Integration -----------------
+
+async function loadMenuConfig() {
+  try {
+    const res = await fetch('/api/plugins', {
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+    if (!res.ok) throw new Error('获取插件列表失败');
+    
+    const plugins = await res.json();
+    const menuPlugin = plugins.find(p => p.name === PLUGIN_NAME);
+    if (!menuPlugin || !menuPlugin.config) throw new Error('未找到菜单插件的配置');
+    
+    pluginConfig = menuPlugin.config;
+    renderFormInputs(pluginConfig);
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+// Save config to backend
+configForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const saveBtn = document.getElementById('save-btn');
+  saveBtn.disabled = true;
+  saveBtn.textContent = '正在保存并热重载...';
 
   try {
-    await page.setViewport({ width: 850, height: 1800, deviceScaleFactor: 2 })
-    await page.setContent(renderHtml(config, avatarUrl, nickname), { waitUntil: 'networkidle0', timeout: 30_000 })
+    const updatedConfig = collectFormData();
+    
+    // Save via core WebUI API
+    const res = await fetch(`/api/plugins/${PLUGIN_NAME}/config`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify({ config: updatedConfig })
+    });
 
-    const target = await page.$('.menu-container')
-    const image = await (target || page).screenshot({
-      type: 'png',
-      encoding: 'binary',
-    })
-
-    return Buffer.from(image)
+    if (res.ok) {
+      showToast('配置保存并热重载成功！');
+      pluginConfig = updatedConfig;
+    } else {
+      const data = await res.json();
+      showToast(`保存失败: ${data.error || '未知错误'}`, 'error');
+    }
+  } catch (err) {
+    showToast('网络请求失败，请检查服务器连接', 'error');
   } finally {
-    await page.close()
+    saveBtn.disabled = false;
+    saveBtn.textContent = '保存并重载配置';
   }
-}
+});
 
-function getMenuImageCache(
-  pluginDir: string,
-  config: PluginConfig,
-  avatarUrl: string,
-  nickname: string,
-  forceRefresh = false
-): { cachePath: string; hash: string; image: Buffer | null } {
-  const cacheDir = join(pluginDir, 'cache')
-  if (!existsSync(cacheDir)) {
-    mkdirSync(cacheDir, { recursive: true })
+// Reset changes
+resetBtn.addEventListener('click', () => {
+  if (pluginConfig) {
+    renderFormInputs(pluginConfig);
+    showToast('已重置回上次保存的配置');
   }
+});
 
-  const hashObj = {
-    config,
-    avatarUrl,
-    nickname,
-    version: PLUGIN_VERSION,
-  }
-  const hash = crypto.createHash('sha256').update(JSON.stringify(hashObj)).digest('hex')
-  const cachePath = join(cacheDir, `${hash}.png`)
+// Add new category card
+addCategoryBtn.addEventListener('click', () => {
+  const cards = categoriesContainer.querySelectorAll('.cat-item-card');
+  const nextOrder = (cards.length + 1) * 10;
+  addCategoryCardDOM({ name: '', badge: '', desc: '', order: nextOrder, width: 1, commands: [] }, cards.length);
+  triggerLivePreview();
+});
 
-  if (!forceRefresh && existsSync(cachePath)) {
-    try {
-      const image = readFileSync(cachePath)
-      return { cachePath, hash, image }
-    } catch {
-      // Fallback
-    }
-  }
+// Trigger live preview when global fields change
+document.querySelectorAll('#field-enabled, #field-command, #field-title, #field-subtitle, #field-theme').forEach(el => {
+  el.addEventListener('input', triggerLivePreview);
+});
 
-  return { cachePath, hash, image: null }
-}
+// ----------------- PNG Screenshot Modal Integration -----------------
+previewPngBtn.addEventListener('click', async () => {
+  // Show Modal
+  pngModal.classList.remove('hide');
+  renderedPngImg.classList.add('hide');
+  modalLoadingText.classList.remove('hide');
+  modalLoadingText.textContent = '正在呼叫 Puppeteer 截图菜单图片... (首次可能耗时较长)';
 
-function saveMenuImageCache(cachePath: string, image: Buffer) {
   try {
-    writeFileSync(cachePath, image)
-    const cacheDir = join(cachePath, '..')
-    const files = readdirSync(cacheDir)
-    const currentFile = join(cachePath).split(/[\\/]/).pop()
-    for (const file of files) {
-      if (file.endsWith('.png') && file !== currentFile) {
-        try {
-          unlinkSync(join(cacheDir, file))
-        } catch {}
-      }
+    // Call the custom PNG preview API endpoint with bypassCache=true to force a fresh render
+    const res = await fetch(`/api/menu/preview/image?bypassCache=true`, {
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+    
+    if (!res.ok) throw new Error('生成截图失败，请确保 Puppeteer 运行正常。');
+    
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    
+    renderedPngImg.src = url;
+    renderedPngImg.classList.remove('hide');
+    modalLoadingText.classList.add('hide');
+  } catch (err) {
+    modalLoadingText.textContent = `生成失败: ${err.message}`;
+  }
+});
+
+// Close Modal logic
+closeModalBtns.forEach(btn => {
+  btn.addEventListener('click', () => {
+    pngModal.classList.add('hide');
+    // Clear image URL to release memory
+    if (renderedPngImg.src.startsWith('blob:')) {
+      URL.revokeObjectURL(renderedPngImg.src);
     }
-  } catch {}
-}
+    renderedPngImg.src = '';
+  });
+});
 
-export default definePlugin({
-  name: PLUGIN_NAME,
-  version: PLUGIN_VERSION,
-  dependencies: ['puppeteer-core'],
-  async setup(ctx) {
-    const pluginDir = join(getAbsPluginDir(), '菜单')
-    const configPath = join(pluginDir, 'config.json')
-
-    // WebUI 预览页面与 API 注册
-    const webui = ctx.services.webui as any
-    if (webui) {
-      webui.registerPage({
-        id: 'menu-preview',
-        title: '菜单预览',
-        icon: '📊',
-        url: '/plugins/菜单/index.html'
-      })
-
-      webui.app.get('/api/menu/preview/image', webui.authMiddleware, async (req: any, res: any) => {
-        try {
-          const forceRefresh = req.query.bypassCache === 'true'
-          const config = loadConfig()
-          const loginInfo = await ctx.bot.getLoginInfo().catch(() => ({
-            user_id: ctx.self_id,
-            nickname: 'Mioki',
-          }))
-
-          const avatarUrl = `http://q.qlogo.cn/headimg_dl?dst_uin=${loginInfo.user_id}&spec=640&img_type=jpg`
-          const nickname = loginInfo.nickname || 'Mioki'
-
-          const cached = getMenuImageCache(pluginDir, config, avatarUrl, nickname, forceRefresh)
-          let image: Buffer
-          if (cached.image) {
-            image = cached.image
-          } else {
-            image = await renderMenuImage(config, avatarUrl, nickname)
-            saveMenuImageCache(cached.cachePath, image)
-          }
-
-          res.set('Content-Type', 'image/png')
-          res.send(image)
-        } catch (err: any) {
-          ctx.logger.error(`[菜单] WebUI 预览生成失败: ${err.message}`)
-          res.status(500).json({ error: err.message })
-        }
-      })
-    }
-
-    const loadConfig = (): PluginConfig => {
-      const defaultConfig: PluginConfig = {
-        enabled: true,
-        command: '菜单',
-        title: 'MIOKI ASSISTANT',
-        subtitle: 'EVA UNIT-02 EDITION',
-        theme: 'eva-02',
-        whitelist: [],
-        categories: [],
-      }
-
-      if (!existsSync(configPath)) {
-        return defaultConfig
-      }
-
-      try {
-        const fileContent = readFileSync(configPath, 'utf-8')
-        return {
-          ...defaultConfig,
-          ...JSON.parse(fileContent),
-        }
-      } catch (err: any) {
-        ctx.logger.error(`[菜单] 加载配置文件失败，回退到默认设置: ${err.message}`)
-        return defaultConfig
-      }
-    }
-
-    ctx.clears.add(async () => {
-      if (browserLaunchPromise) {
-        try {
-          const b = await browserLaunchPromise
-          await b.close()
-        } catch {}
-        browserLaunchPromise = null
-        browser = null
-      } else if (browser) {
-        ctx.logger.info('[菜单] 正在关闭 Puppeteer 浏览器实例...')
-        await browser.close()
-        browser = null
-      }
-    })
-
-    ctx.logger.info(`[菜单] 插件 v${PLUGIN_VERSION} 已加载`)
-
-    const handleMessage = async (e: GroupMessageEvent | PrivateMessageEvent) => {
-      const config = loadConfig()
-      if (!config.enabled) return
-
-      // Handle whitelist if in group
-      if (
-        e.message_type === 'group' &&
-        config.whitelist &&
-        config.whitelist.length > 0 &&
-        !config.whitelist.includes(e.group_id)
-      ) {
-        return
-      }
-
-      // Check command matches
-      const text = e.raw_message?.trim()
-      if (!text) return
-
-      const prefix = (ctx.botConfig.prefix ?? '#').replace(/[-_.\s+^$?[\]{}]/g, '\\$&')
-      const cleanCommand = config.command.trim()
-      const matchRegex = new RegExp(`^(?:${prefix})?${cleanCommand}$`)
-      const refreshRegex = new RegExp(`^(?:${prefix})?${cleanCommand}(?:\\s+)?刷新$`)
-
-      const isNormalMatch = matchRegex.test(text)
-      const isRefreshMatch = refreshRegex.test(text)
-
-      if (isNormalMatch || isRefreshMatch) {
-        const forceRefresh = isRefreshMatch
-        ctx.logger.info(`[菜单] 收到触发指令 (forceRefresh: ${forceRefresh}), 正在获取菜单图片...`)
-        try {
-          const loginInfo = await ctx.bot.getLoginInfo().catch(() => ({
-            user_id: ctx.self_id,
-            nickname: 'Mioki',
-          }))
-
-          const avatarUrl = `http://q.qlogo.cn/headimg_dl?dst_uin=${loginInfo.user_id}&spec=640&img_type=jpg`
-          const nickname = loginInfo.nickname || 'Mioki'
-
-          // Get from cache
-          const cached = getMenuImageCache(pluginDir, config, avatarUrl, nickname, forceRefresh)
-          let image: Buffer
-          if (cached.image) {
-            ctx.logger.info(`[菜单] 直接调用本地已缓存图片`)
-            image = cached.image
-          } else {
-            ctx.logger.info(`[菜单] 缓存未命中/强制刷新，开始使用 Puppeteer 渲染...`)
-            image = await renderMenuImage(config, avatarUrl, nickname)
-            saveMenuImageCache(cached.cachePath, image)
-          }
-
-          await e.reply(ctx.segment.image(image))
-          ctx.logger.info(`[菜单] 菜单图片发送成功`)
-        } catch (err: any) {
-          ctx.logger.error(`[菜单] 渲染/发送菜单失败: ${err.message}`)
-          await e.reply(`菜单生成失败: ${err.message}`)
-        }
-      }
-    }
-
-    ctx.handle('message.group', handleMessage)
-    ctx.handle('message.private', handleMessage)
-  },
-})
+// Init
+loadMenuConfig();

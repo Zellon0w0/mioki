@@ -1,0 +1,64 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "点歌 插件配置",
+  "description": "管理点歌插件的配置项，包括默认平台、各平台 Cookie 以及列表渲染方式",
+  "type": "object",
+  "properties": {
+    "enabled": {
+      "title": "启用状态",
+      "type": "boolean",
+      "default": true,
+      "description": "是否开启点歌插件的响应处理"
+    },
+    "defaultPlatform": {
+      "title": "默认搜索平台",
+      "type": "string",
+      "default": "netease",
+      "enum": ["netease", "qq", "kugou"],
+      "enumNames": ["网易云音乐", "QQ音乐", "酷狗音乐"],
+      "description": "指令“点歌”默认使用的搜索平台"
+    },
+    "neteaseCookie": {
+      "title": "网易云 Cookie",
+      "type": "string",
+      "default": "",
+      "format": "password",
+      "description": "可选。登录网易云网页版，复制 Header 中的 Cookie（包含 MUSIC_U 即可），用于获取 VIP / 高清音源"
+    },
+    "qqCookie": {
+      "title": "QQ音乐 Cookie",
+      "type": "string",
+      "default": "",
+      "format": "password",
+      "description": "可选。登录QQ音乐网页版，复制 Header 中的 Cookie，用于获取 VIP / 试听音源"
+    },
+    "kugouCookie": {
+      "title": "酷狗音乐 Cookie",
+      "type": "string",
+      "default": "",
+      "format": "password",
+      "description": "可选。登录酷狗网页版，复制 Header 中的 Cookie"
+    },
+    "useImageRender": {
+      "title": "启用精美图片渲染列表",
+      "type": "boolean",
+      "default": true,
+      "description": "是否使用 Puppeteer 渲染并截图发送精美的 EVA 风格歌单大图。若关闭或渲染失败则自动降级为文本列表。"
+    },
+    "sessionTimeoutMs": {
+      "title": "点歌会话有效期(毫秒)",
+      "type": "integer",
+      "default": 180000,
+      "description": "搜索歌曲后，发送选择序号指令的有效期。默认 3 分钟（180000 毫秒）。"
+    },
+    "whitelist": {
+      "title": "白名单群组",
+      "type": "array",
+      "items": {
+        "type": "integer"
+      },
+      "description": "允许响应此命令的 QQ 群号，不填表示响应所有群。"
+    }
+  },
+  "required": []
+}

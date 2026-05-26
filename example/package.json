@@ -20,7 +20,8 @@
       "chatgpt",
       "天气",
       "白名单管理",
-      "菜单"
+      "菜单",
+      "点歌"
     ],
     "log_level": "info",
     "plugins_dir": "../plugins",
