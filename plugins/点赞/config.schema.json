@@ -1,0 +1,22 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "点赞 插件配置",
+  "description": "自动对群友发送名片赞配置",
+  "type": "object",
+  "properties": {
+    "enabled": {
+      "title": "启用状态",
+      "type": "boolean",
+      "default": true,
+      "description": "是否启用点赞插件"
+    },
+    "whitelist": {
+      "title": "白名单群组",
+      "type": "array",
+      "items": {
+        "type": "integer"
+      },
+      "description": "允许响应点赞命令的 QQ 群号，每行一个"
+    }
+  }
+}

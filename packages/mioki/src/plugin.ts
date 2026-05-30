@@ -262,7 +262,7 @@ export const runtimePlugins: Map<
     plugin: MiokiPlugin
     disable: () => any
   }
-> = new Map<
+> = ((globalThis as any).__mioki_runtime_plugins__ ||= new Map<
   string,
   {
     name: string
@@ -272,7 +272,7 @@ export const runtimePlugins: Map<
     plugin: MiokiPlugin
     disable: () => any
   }
->()
+>())
 
 const buildRemovedActions = (bot: NapCat) =>
   Object.fromEntries(

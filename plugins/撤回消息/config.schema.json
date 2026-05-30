@@ -1,0 +1,15 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "撤回消息 插件配置",
+  "description": "允许用户通过回复“撤回”来让机器人撤回自身发出的消息",
+  "type": "object",
+  "properties": {
+    "enabled": {
+      "title": "启用状态",
+      "type": "boolean",
+      "default": true,
+      "description": "是否开启本插件"
+    }
+  },
+  "required": ["enabled"]
+}

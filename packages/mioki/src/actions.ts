@@ -162,8 +162,14 @@ export function createForwardMsg(
   options: { user_id?: number; nickname?: string } = {},
 ): Sendable {
   const { user_id = bot.uin, nickname } = options
-  const content = message.map((msg) => (typeof msg === 'string' ? segment.text(msg) : msg))
-  return segment.node({ user_id: String(user_id), nickname, content })
+  const content = bot.normalizeSendable(message) as any
+  return segment.node({
+    user_id: String(user_id),
+    uin: String(user_id) as any,
+    nickname,
+    name: nickname as any,
+    content,
+  })
 }
 
 /**

@@ -1,0 +1,19 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "WebUI Plugin Configuration",
+  "type": "object",
+  "properties": {
+    "port": {
+      "title": "Server Port",
+      "type": "integer",
+      "default": 3045,
+      "description": "Port to run the WebUI server on"
+    },
+    "token": {
+      "title": "Auth Token",
+      "type": "string",
+      "description": "Authentication token for WebUI access"
+    }
+  },
+  "required": ["port", "token"]
+}

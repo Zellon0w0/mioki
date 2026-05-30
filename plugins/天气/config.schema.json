@@ -1,0 +1,86 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "天气插件配置",
+  "description": "管理天气预报查询、降温提醒以及各群的默认天气地址配置",
+  "type": "object",
+  "properties": {
+    "enabled": {
+      "title": "启用状态",
+      "type": "boolean",
+      "default": true,
+      "description": "是否开启天气插件的处理"
+    },
+    "whitelist": {
+      "title": "白名单群组",
+      "type": "array",
+      "items": {
+        "type": "integer"
+      },
+      "description": "允许响应此命令的 QQ 群号，留空表示允许所有群，每行一个"
+    },
+    "groups": {
+      "title": "各群天气配置",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "title": "群配置",
+        "properties": {
+          "groupId": {
+            "title": "QQ 群号",
+            "type": "integer",
+            "description": "QQ 群号"
+          },
+          "locations": {
+            "title": "天气地址列表",
+            "type": "array",
+            "items": {
+              "type": "object",
+              "title": "地址信息",
+              "properties": {
+                "id": {
+                  "title": "唯一 ID",
+                  "type": "string",
+                  "description": "选填，留空时保存会自动生成"
+                },
+                "query": {
+                  "title": "查询关键字",
+                  "type": "string",
+                  "description": "地址查询关键字，如：北京 / 洪山区"
+                },
+                "displayName": {
+                  "title": "显示名称",
+                  "type": "string",
+                  "description": "在天气卡片中显示的名称，如：北京市 / 湖北省 武汉市 洪山"
+                },
+                "province": {
+                  "title": "省份",
+                  "type": "string",
+                  "description": "可选"
+                },
+                "city": {
+                  "title": "城市",
+                  "type": "string",
+                  "description": "可选"
+                },
+                "county": {
+                  "title": "区县",
+                  "type": "string",
+                  "description": "可选"
+                }
+              },
+              "required": ["query", "displayName"]
+            }
+          },
+          "primaryId": {
+            "title": "主地址 ID",
+            "type": "string",
+            "description": "本群的默认主地址唯一 ID，默认为第一个地址"
+          }
+        },
+        "required": ["groupId"]
+      },
+      "description": "自定义每个群的天气查询主地址和备用地址"
+    }
+  },
+  "required": ["enabled", "whitelist", "groups"]
+}

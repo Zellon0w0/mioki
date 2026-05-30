@@ -1,0 +1,75 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "电费 插件配置",
+  "description": "管理电费查询与余额预警的配置参数",
+  "type": "object",
+  "properties": {
+    "enabled": {
+      "title": "启用状态",
+      "type": "boolean",
+      "default": true,
+      "description": "是否开启本插件"
+    },
+    "whitelist": {
+      "title": "白名单群号",
+      "type": "array",
+      "items": {
+        "type": "integer"
+      },
+      "description": "允许使用本插件的 QQ 群号，留空代表不限制，每行一个"
+    },
+    "warningBalance": {
+      "title": "预警余额阈值",
+      "type": "number",
+      "default": 10,
+      "description": "低于该余额时触发主动预警提醒"
+    },
+    "renderWaitTime": {
+      "title": "渲染等待时间 (ms)",
+      "type": "integer",
+      "default": 1000,
+      "description": "Puppeteer 截图前等待页面渲染完成的时间"
+    },
+    "maxHistoryDays": {
+      "title": "最大历史记录天数",
+      "type": "integer",
+      "default": 30,
+      "description": "最大展示的历史用电记录天数"
+    },
+    "contentWidth": {
+      "title": "截图宽度",
+      "type": "integer",
+      "default": 800,
+      "description": "截图页面的内容宽度"
+    },
+    "padding": {
+      "title": "截图内边距",
+      "type": "integer",
+      "default": 40,
+      "description": "截图页面的内边距"
+    },
+    "browserPath": {
+      "title": "Chromium 路径",
+      "type": "string",
+      "default": "/usr/bin/chromium",
+      "description": "Puppeteer 调用的 Chromium/Chrome 可执行文件路径"
+    },
+    "apiBaseUrl": {
+      "title": "API 请求根地址",
+      "type": "string",
+      "default": "https://mobiles.znmdhq.com/api/room/mobile",
+      "description": "查询电费的 API 接口根地址"
+    }
+  },
+  "required": [
+    "enabled",
+    "whitelist",
+    "warningBalance",
+    "renderWaitTime",
+    "maxHistoryDays",
+    "contentWidth",
+    "padding",
+    "browserPath",
+    "apiBaseUrl"
+  ]
+}

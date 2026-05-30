@@ -1,11 +1,91 @@
-node_modules
-.DS_Store
-dist
-logs
+# Dependency Directories
+node_modules/
+jspm_packages/
+web_modules/
 
+# Build & Output Directories
+dist/
+build/
+out/
 bot
-**/plugins/**/.browser-data
-
-# VitePress build output
 docs/.vitepress/dist
 docs/.vitepress/cache
+
+# Log files & Debugging Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# OS & System Files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+# IDEs & Editor Configuration
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Environment Variables & Secrets
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.env.*
+*.env
+.dev.vars
+session.token
+token.json
+credentials.json
+secrets.json
+*.pem
+*.key
+*.cert
+*.pfx
+*.crt
+id_rsa
+id_ecdsa
+id_ed25519
+
+# SQLite Databases & Storage Files
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+
+# Plugins Runtime Data, Configs and Logs
+**/plugins/**/.browser-data
+**/plugins/**/config.json
+**/plugins/**/whitelist.json
+**/plugins/**/data.json
+**/plugins/**/*.db
+**/plugins/**/*.db-*
+**/plugins/**/*.bak
+**/plugins/**/temp/
+
+# Example Runtime Data & Logs
+example/data/
+example/logs/
+*.log
+
+
+

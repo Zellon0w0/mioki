@@ -1,0 +1,4 @@
+axios
+puppeteer-core
+markdown-it
+markdown-it-katex

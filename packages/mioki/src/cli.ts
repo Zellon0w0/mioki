@@ -212,7 +212,7 @@ interface CliOptions {
 
       // 注册定时任务
       ctx.cron('*/3 * * * * *', async (ctx, task) => {
-        ctx.logger.info('Cron', task)
+        ctx.logger.info('Cron task triggered')
       })
 
       return () => {

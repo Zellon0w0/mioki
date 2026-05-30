@@ -1,0 +1,14 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "统一群黑白名单管理插件",
+  "description": "统一群黑白名单管理插件的自身配置项",
+  "type": "object",
+  "properties": {
+    "enabled": {
+      "title": "启用插件",
+      "type": "boolean",
+      "default": true,
+      "description": "是否启用此配置管理插件"
+    }
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "视奸 插件配置",
+  "description": "Steam 游戏视奸和查询插件的配置项",
+  "type": "object",
+  "properties": {
+    "enabled": {
+      "title": "启用状态",
+      "type": "boolean",
+      "default": true,
+      "description": "是否开启本插件"
+    },
+    "whitelist": {
+      "title": "白名单群号",
+      "type": "array",
+      "items": {
+        "type": "integer"
+      },
+      "description": "允许使用本插件的 QQ 群号，留空代表不限制，每行一个"
+    },
+    "browserPath": {
+      "title": "Chromium 路径",
+      "type": "string",
+      "default": "/usr/bin/chromium",
+      "description": "Puppeteer 调用的 Chromium/Chrome 可执行文件路径"
+    },
+    "apiKey": {
+      "title": "Steam 接口 API Key",
+      "type": "string",
+      "format": "password",
+      "default": "",
+      "description": "Steam/Viki 接口调用的 API 密钥"
+    }
+  },
+  "required": ["enabled", "whitelist", "browserPath", "apiKey"]
+}
