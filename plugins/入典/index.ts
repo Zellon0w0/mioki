@@ -1,8 +1,8 @@
 import { definePlugin, getAbsPluginDir } from 'mioki'
-import puppeteer, { Browser, Page } from 'puppeteer-core'
 import { join, dirname } from 'path'
 import { readFileSync, existsSync, mkdirSync, unlink } from 'fs'
 import { fileURLToPath } from 'url'
+import { sharedBrowser } from '../_shared/resource'
 
 // 获取当前插件目录路径
 const __filename = fileURLToPath(import.meta.url)
@@ -14,102 +14,10 @@ const PLUGIN_VERSION = '1.0.0'
 interface PluginConfig {
   enabled: boolean
   whitelist: number[]
-  browserPath: string
 }
 
 const CONFIG = {
   TEMP_DIR: join(getAbsPluginDir(), '入典', 'temp'),
-}
-
-let globalBrowser: Browser | null = null
-let browserLaunchPromise: Promise<Browser> | null = null
-
-function findChromeExecutable(configuredPath?: string): string {
-  if (configuredPath && existsSync(configuredPath)) {
-    return configuredPath
-  }
-  const localAppData = process.env.LOCALAPPDATA
-  const programFiles = process.env.PROGRAMFILES
-  const programFilesX86 = process.env['PROGRAMFILES(X86)']
-
-  const candidates = [
-    process.env.PUPPETEER_EXECUTABLE_PATH,
-    process.env.CHROME_PATH,
-    configuredPath,
-    '/usr/bin/chromium',
-    '/usr/bin/chromium-browser',
-    '/usr/bin/google-chrome',
-    '/usr/bin/google-chrome-stable',
-    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-    programFiles ? join(programFiles, 'Google/Chrome/Application/chrome.exe') : '',
-    programFilesX86 ? join(programFilesX86, 'Google/Chrome/Application/chrome.exe') : '',
-    localAppData ? join(localAppData, 'Google/Chrome/Application/chrome.exe') : '',
-  ].filter((c): c is string => Boolean(c))
-
-  const executablePath = candidates.find((c) => existsSync(c))
-  if (!executablePath) {
-    throw new Error('未找到 Chrome/Chromium，请设置 PUPPETEER_EXECUTABLE_PATH 或 CHROME_PATH')
-  }
-  return executablePath
-}
-
-async function getBrowserInstance(browserPath: string): Promise<Browser> {
-  if (globalBrowser && globalBrowser.connected) {
-    return globalBrowser
-  }
-  globalBrowser = null
-
-  if (!browserLaunchPromise) {
-    browserLaunchPromise = puppeteer.launch({
-      executablePath: findChromeExecutable(browserPath),
-      headless: true,
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-gpu',
-        '--disable-software-rasterizer',
-        '--font-render-hinting=none'
-      ],
-      defaultViewport: {
-        width: 1000,
-        height: 1000,
-        deviceScaleFactor: 2 // 提高分辨率
-      }
-    }).then((b) => {
-      globalBrowser = b
-      browserLaunchPromise = null
-      b.on('disconnected', () => {
-        if (globalBrowser === b) {
-          globalBrowser = null
-        }
-      })
-      return b
-    }).catch((err) => {
-      browserLaunchPromise = null
-      throw err
-    })
-  }
-  return browserLaunchPromise
-}
-
-async function closeBrowserInstance(): Promise<void> {
-  if (browserLaunchPromise) {
-    try {
-      const b = await browserLaunchPromise
-      await b.close()
-    } catch {}
-    browserLaunchPromise = null
-    globalBrowser = null
-    return
-  }
-  if (globalBrowser) {
-    try {
-      await globalBrowser.close()
-    } catch {}
-    globalBrowser = null
-    console.log('浏览器实例已关闭')
-  }
 }
 
 const getAvatarUrl = async (userId: number | string): Promise<string> => {
@@ -120,16 +28,13 @@ async function generateRudianImage(
   message: string,
   nickname: string,
   avatarUrl: string,
-  browserPath: string
 ): Promise<string> {
-  const browser = await getBrowserInstance(browserPath)
-  const page = await browser.newPage()
+  return sharedBrowser.withPage(
+    async (page) => {
+      // Font Fix: Use HanYi WenHei as requested
+      const fontStyle = `"汉仪文黑-85W", "HYWenHei-85W", "汉仪文黑", "HYWenHei", "Microsoft YaHei", "SimHei", "PingFang SC", "Noto Sans SC", sans-serif`
 
-  try {
-    // Font Fix: Use HanYi WenHei as requested
-    const fontStyle = `"汉仪文黑-85W", "HYWenHei-85W", "汉仪文黑", "HYWenHei", "Microsoft YaHei", "SimHei", "PingFang SC", "Noto Sans SC", sans-serif`
-
-  const htmlContent = `
+      const htmlContent = `
     <html>
       <head>
         <style>
@@ -195,38 +100,42 @@ async function generateRudianImage(
     </html>
   `
 
-  await page.setContent(htmlContent, { waitUntil: 'networkidle0' })
+      await page.setContent(htmlContent, { waitUntil: 'networkidle0' })
 
-  // 获取页面实际高度并重设 Viewport，防止长文本截断或缩放错位
-  const height = await page.evaluate(() => {
-    return document.documentElement.scrollHeight
-  })
-  await page.setViewport({
-    width: 1000,
-    height: Math.ceil(height),
-    deviceScaleFactor: 2
-  })
+      // 获取页面实际高度并重设 Viewport，防止长文本截断或缩放错位
+      const height = await page.evaluate(() => {
+        return document.documentElement.scrollHeight
+      })
+      await page.setViewport({
+        width: 1000,
+        height: Math.ceil(height),
+        deviceScaleFactor: 2,
+      })
 
-  const outputPath = join(CONFIG.TEMP_DIR, `rudian-${Date.now()}.png`)
-  const container = await page.$('.container') 
-  if (container) {
-    await container.screenshot({ 
-      path: outputPath,
-      type: 'png',
-      omitBackground: true
-    })
-  } else {
-    await page.screenshot({ 
-      path: outputPath,
-      fullPage: true,
-      type: 'png'
-    })
-  }
+      const outputPath = join(CONFIG.TEMP_DIR, `rudian-${Date.now()}.png`)
+      const container = await page.$('.container')
+      if (container) {
+        await container.screenshot({
+          path: outputPath,
+          type: 'png',
+          omitBackground: true,
+        })
+      } else {
+        await page.screenshot({
+          path: outputPath,
+          fullPage: true,
+          type: 'png',
+        })
+      }
 
-  return outputPath
-  } finally {
-    await page.close()
-  }
+      return outputPath
+    },
+    {
+      label: `${PLUGIN_NAME} 图片生成`,
+      timeoutMs: 35_000,
+      viewport: { width: 1000, height: 1000, deviceScaleFactor: 2 },
+    },
+  )
 }
 
 export default definePlugin({
@@ -241,7 +150,6 @@ export default definePlugin({
       const defaultConfig: PluginConfig = {
         enabled: true,
         whitelist: [],
-        browserPath: '/usr/bin/chromium'
       }
 
       if (!existsSync(configPath)) {
@@ -260,7 +168,7 @@ export default definePlugin({
     if (!existsSync(CONFIG.TEMP_DIR)) {
       mkdirSync(CONFIG.TEMP_DIR, { recursive: true })
     }
-    
+
     const config = loadConfig()
 
     ctx.handle('message.group', async (e) => {
@@ -271,46 +179,39 @@ export default definePlugin({
 
       if (text === '入典') {
         ctx.logger.info(`[入典] 收到来自群 ${e.group_id} 的入典请求`)
-        
+
         let imgPath: string | null = null
         try {
-            const replyMsg = await (e as any).getQuoteMsg()
-            if (!replyMsg) {
-                await ctx.bot.sendGroupMsg(e.group_id, [ctx.segment.text('请引用需要入典的消息')])
-                return
-            }
+          const replyMsg = await (e as any).getQuoteMsg()
+          if (!replyMsg) {
+            await ctx.bot.sendGroupMsg(e.group_id, [ctx.segment.text('请引用需要入典的消息')])
+            return
+          }
 
-            const content = replyMsg.raw_message || ''
-            const senderName = replyMsg.sender.nickname || replyMsg.sender.card || '未知用户'
-            const senderId = replyMsg.sender.user_id
-            const avatarUrl = await getAvatarUrl(senderId)
+          const content = replyMsg.raw_message || ''
+          const senderName = replyMsg.sender.nickname || replyMsg.sender.card || '未知用户'
+          const senderId = replyMsg.sender.user_id
+          const avatarUrl = await getAvatarUrl(senderId)
 
-            ctx.logger.info(`[入典] 正在为 ${senderName}(${senderId}) 生成入典图片...`)
-            imgPath = await generateRudianImage(content, senderName, avatarUrl, config.browserPath)
-            
-            await ctx.bot.sendGroupMsg(e.group_id, [
-                ctx.segment.image(`file://${imgPath}`)
-            ])
+          ctx.logger.info(`[入典] 正在为 ${senderName}(${senderId}) 生成入典图片...`)
+          imgPath = await generateRudianImage(content, senderName, avatarUrl)
+
+          await ctx.bot.sendGroupMsg(e.group_id, [ctx.segment.image(`file://${imgPath}`)])
         } catch (err) {
-            ctx.logger.error(`入典插件错误: ${err}`)
-            await ctx.bot.sendGroupMsg(e.group_id, [ctx.segment.text('生成入典图片失败')])
+          ctx.logger.error(`入典插件错误: ${err}`)
+          await ctx.bot.sendGroupMsg(e.group_id, [ctx.segment.text('生成入典图片失败')])
         } finally {
-            if (imgPath) {
-                const fileToDelete = imgPath
-                const timer = setTimeout(() => {
-                    if (existsSync(fileToDelete)) {
-                        unlink(fileToDelete, () => {})
-                    }
-                }, 15000)
-                ctx.clears.add(() => clearTimeout(timer))
-            }
+          if (imgPath) {
+            const fileToDelete = imgPath
+            const timer = setTimeout(() => {
+              if (existsSync(fileToDelete)) {
+                unlink(fileToDelete, () => {})
+              }
+            }, 15000)
+            ctx.clears.add(() => clearTimeout(timer))
+          }
         }
       }
     })
-
-    // 插件卸载时的清理逻辑
-    return async () => {
-      await closeBrowserInstance()
-    }
-  }
+  },
 })

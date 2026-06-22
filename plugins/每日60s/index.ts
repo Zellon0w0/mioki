@@ -3,6 +3,24 @@ import axios from 'axios'
 import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 
+async function runWithReaction<T>(event: any, task: () => Promise<T>, id = '60'): Promise<T> {
+  let reacted = false
+  if (typeof event?.addReaction === 'function') {
+    try {
+      await event.addReaction(id)
+      reacted = true
+    } catch {}
+  }
+
+  try {
+    return await task()
+  } finally {
+    if (reacted && typeof event?.delReaction === 'function') {
+      await event.delReaction(id).catch(() => {})
+    }
+  }
+}
+
 const PLUGIN_NAME = '每日60s'
 const PLUGIN_VERSION = '1.0.2'
 
@@ -26,7 +44,7 @@ export default definePlugin({
         enabled: true,
         newsApi: 'https://60s.viki.moe/v2',
         time: '0 8 * * *',
-        whitelist: []
+        whitelist: [],
       }
 
       if (!existsSync(configPath)) {
@@ -37,7 +55,7 @@ export default definePlugin({
         const fileContent = readFileSync(configPath, 'utf-8')
         return {
           ...defaultConfig,
-          ...JSON.parse(fileContent)
+          ...JSON.parse(fileContent),
         }
       } catch (err: any) {
         ctx.logger.error(`加载配置文件失败，回退到默认设置: ${err.message}`)
@@ -74,13 +92,15 @@ export default definePlugin({
       if (currentConfig.whitelist.length > 0 && !currentConfig.whitelist.includes(e.group_id)) return
 
       if (ctx.text(e).trim() === '60s') {
-        try {
-          const imageData = await getNewsImageWithProxy(currentConfig.newsApi)
-          await ctx.bot.sendGroupMsg(e.group_id, [ctx.segment.image(imageData)])
-        } catch (error) {
-          ctx.logger.error(`发送新闻图片失败: ${error}`)
-          await ctx.bot.sendGroupMsg(e.group_id, [ctx.segment.text('获取新闻失败，请稍后重试')])
-        }
+        await runWithReaction(e, async () => {
+          try {
+            const imageData = await getNewsImageWithProxy(currentConfig.newsApi)
+            await ctx.bot.sendGroupMsg(e.group_id, [ctx.segment.image(imageData)])
+          } catch (error) {
+            ctx.logger.error(`发送新闻图片失败: ${error}`)
+            await ctx.bot.sendGroupMsg(e.group_id, [ctx.segment.text('获取新闻失败，请稍后重试')])
+          }
+        })
       }
     })
 

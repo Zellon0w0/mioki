@@ -25,6 +25,13 @@
         "type": "integer"
       },
       "description": "屏蔽发送链接进行解析的 QQ 号，每行一个"
+    },
+    "kuaishouCookie": {
+      "title": "快手 Cookie",
+      "type": "string",
+      "default": "",
+      "format": "password",
+      "description": "可选。用于需要登录态的快手视频解析请求，留空时不发送 Cookie"
     }
   },
   "required": ["enabled", "whitelist", "blacklist"]

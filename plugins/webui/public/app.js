@@ -15,7 +15,6 @@ const logoutBtn = document.getElementById('logout-btn')
 const pluginList = document.getElementById('plugin-list')
 const selectedPluginTitle = document.getElementById('selected-plugin-title')
 const selectedPluginDesc = document.getElementById('selected-plugin-desc')
-const pluginStatusBadge = document.getElementById('plugin-status-badge')
 const welcomeView = document.getElementById('welcome-view')
 const editorView = document.getElementById('editor-view')
 const configForm = document.getElementById('config-form')
@@ -27,9 +26,9 @@ const toast = document.getElementById('toast')
 function showToast(message, type = 'success') {
   const toastMsg = toast.querySelector('.toast-message')
   toastMsg.textContent = message
-  
+
   toast.className = `toast show ${type}`
-  
+
   setTimeout(() => {
     toast.classList.remove('show')
   }, 4000)
@@ -43,7 +42,7 @@ function setDeepValue(obj, path, value) {
     const key = keys[i]
     const nextKey = keys[i + 1]
     const isNextKeyNumeric = /^\d+$/.test(nextKey)
-    
+
     if (!(key in current)) {
       current[key] = isNextKeyNumeric ? [] : {}
     }
@@ -73,12 +72,12 @@ function renderArrayObjectItem(container, itemSchema, config, arrayPath, index) 
     <div class="form-grid array-item-fields"></div>
   `
   container.appendChild(itemWrapper)
-  
+
   const fieldsContainer = itemWrapper.querySelector('.array-item-fields')
   const itemPath = `${arrayPath}.${index}`
-  
+
   renderForm(itemSchema, config, fieldsContainer, itemPath)
-  
+
   const removeBtn = itemWrapper.querySelector('.remove-item-btn')
   removeBtn.addEventListener('click', () => {
     itemWrapper.remove()
@@ -91,23 +90,23 @@ function renderArrayObjectItem(container, itemSchema, config, arrayPath, index) 
 function reindexArrayContainer(container, itemSchema) {
   const arrayPath = container.getAttribute('data-array-path')
   const items = container.querySelectorAll('.array-object-item')
-  
+
   items.forEach((item, index) => {
     const fieldsContainer = item.querySelector('.array-item-fields')
     const inputs = fieldsContainer.querySelectorAll('[data-path]')
-    
-    inputs.forEach(input => {
+
+    inputs.forEach((input) => {
       const oldPath = input.getAttribute('data-path')
       const parts = oldPath.split('.')
       const propKey = parts.slice(parts.indexOf(arrayPath.split('.').pop()) + 2).join('.')
       const newPath = `${arrayPath}.${index}.${propKey}`
-      
+
       input.setAttribute('data-path', newPath)
       const oldId = input.getAttribute('id')
       if (oldId) {
         input.setAttribute('id', `field-${newPath.replace(/\./g, '-')}`)
       }
-      
+
       const formGroup = input.closest('.form-group')
       if (formGroup) {
         const label = formGroup.querySelector('label')
@@ -121,11 +120,14 @@ function reindexArrayContainer(container, itemSchema) {
 
 // Helper: Sync model select options in real time
 function syncModelDropdowns(textarea) {
-  const models = textarea.value.split('\n').map(line => line.trim()).filter(Boolean)
+  const models = textarea.value
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
   const dropdowns = document.querySelectorAll('.current-model-select')
-  dropdowns.forEach(select => {
+  dropdowns.forEach((select) => {
     const curVal = select.value
-    select.innerHTML = models.map(m => `<option value="${m}">${m}</option>`).join('')
+    select.innerHTML = models.map((m) => `<option value="${m}">${m}</option>`).join('')
     if (models.includes(curVal)) {
       select.value = curVal
     }
@@ -135,11 +137,13 @@ function syncModelDropdowns(textarea) {
 // Helper: Sync API select options in real time
 function syncApiDropdowns(container) {
   const nameInputs = container.querySelectorAll('[data-path$=".name"]')
-  const apis = Array.from(nameInputs).map(input => input.value.trim()).filter(Boolean)
+  const apis = Array.from(nameInputs)
+    .map((input) => input.value.trim())
+    .filter(Boolean)
   const dropdowns = document.querySelectorAll('.current-api-select')
-  dropdowns.forEach(select => {
+  dropdowns.forEach((select) => {
     const curVal = select.value
-    select.innerHTML = apis.map(a => `<option value="${a}">${a}</option>`).join('')
+    select.innerHTML = apis.map((a) => `<option value="${a}">${a}</option>`).join('')
     if (apis.includes(curVal)) {
       select.value = curVal
     }
@@ -152,14 +156,14 @@ async function checkAuth() {
     showLogin()
     return
   }
-  
+
   try {
     const res = await fetch('/api/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ token: currentToken })
+      body: JSON.stringify({ token: currentToken }),
     })
-    
+
     if (res.ok) {
       showApp()
     } else {
@@ -181,11 +185,11 @@ function showLogin() {
 async function showApp() {
   loginContainer.classList.add('hide')
   appContainer.classList.remove('hide')
-  
+
   // 1. Fetch bots' group list
   try {
     const groupsRes = await fetch('/api/bots/groups', {
-      headers: { 'Authorization': `Bearer ${currentToken}` }
+      headers: { Authorization: `Bearer ${currentToken}` },
     })
     if (groupsRes.ok) {
       botsGroups = await groupsRes.json()
@@ -197,7 +201,7 @@ async function showApp() {
   // 2. Fetch dynamic pages
   try {
     const pagesRes = await fetch('/api/webui/pages', {
-      headers: { 'Authorization': `Bearer ${currentToken}` }
+      headers: { Authorization: `Bearer ${currentToken}` },
     })
     if (pagesRes.ok) {
       dynamicPages = await pagesRes.json()
@@ -213,48 +217,48 @@ async function showApp() {
 function renderSystemPages() {
   const systemPagesSection = document.getElementById('system-pages-section')
   const systemPagesList = document.getElementById('system-pages-list')
-  
+
   systemPagesList.innerHTML = ''
-  
+
   if (dynamicPages.length === 0) {
     systemPagesSection.classList.add('hide')
     return
   }
-  
+
   systemPagesSection.classList.remove('hide')
-  
-  dynamicPages.forEach(page => {
+
+  dynamicPages.forEach((page) => {
     const li = document.createElement('li')
     li.className = 'menu-item'
-    
+
     li.innerHTML = `
       <div class="menu-item-info">
         <span class="menu-item-icon" style="display: flex; align-items: center; justify-content: center;">${page.icon || '📄'}</span>
         <span>${page.title}</span>
       </div>
     `
-    
+
     li.addEventListener('click', () => {
       selectSystemPage(page)
-      document.querySelectorAll('.menu-item').forEach(el => el.classList.remove('active'))
+      document.querySelectorAll('.menu-item').forEach((el) => el.classList.remove('active'))
       li.classList.add('active')
     })
-    
+
     systemPagesList.appendChild(li)
   })
 }
 
 function selectSystemPage(page) {
   activePlugin = null
-  
+
   // Hide standard main content views
   const mainContent = document.querySelector('.main-content')
   mainContent.classList.add('hide')
-  
+
   // Show iframe container
   const iframeContainer = document.getElementById('iframe-container')
   iframeContainer.classList.remove('hide')
-  
+
   const iframe = document.getElementById('page-iframe')
   iframe.src = page.url
 }
@@ -264,14 +268,14 @@ loginForm.addEventListener('submit', async (e) => {
   e.preventDefault()
   const token = tokenInput.value.trim()
   if (!token) return
-  
+
   try {
     const res = await fetch('/api/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ token })
+      body: JSON.stringify({ token }),
     })
-    
+
     if (res.ok) {
       const data = await res.json()
       currentToken = data.token
@@ -300,15 +304,15 @@ logoutBtn.addEventListener('click', () => {
 async function loadPlugins() {
   try {
     const res = await fetch('/api/plugins', {
-      headers: { 'Authorization': `Bearer ${currentToken}` }
+      headers: { Authorization: `Bearer ${currentToken}` },
     })
-    
+
     if (res.ok) {
       pluginsList = await res.json()
       renderPluginList()
       // If we have an active plugin selected, re-render its editor to reflect updated config
       if (activePlugin) {
-        const updated = pluginsList.find(p => p.name === activePlugin.name)
+        const updated = pluginsList.find((p) => p.name === activePlugin.name)
         if (updated) {
           selectPlugin(updated)
         }
@@ -328,26 +332,25 @@ async function loadPlugins() {
 // Render plugins in Sidebar
 function renderPluginList() {
   pluginList.innerHTML = ''
-  
-  pluginsList.forEach(plugin => {
+
+  pluginsList.forEach((plugin) => {
     const li = document.createElement('li')
     li.className = `menu-item ${activePlugin && activePlugin.name === plugin.name ? 'active' : ''}`
-    
+
     li.innerHTML = `
       <div class="menu-item-info">
-        <div class="status-dot ${plugin.isEnabled ? 'active' : ''}"></div>
         <span>${plugin.name}</span>
       </div>
       <span class="badge-small">${plugin.hasConfig ? '已配置' : '无配置'}</span>
     `
-    
+
     li.addEventListener('click', () => {
       selectPlugin(plugin)
       // Highlight in UI
-      document.querySelectorAll('.menu-item').forEach(el => el.classList.remove('active'))
+      document.querySelectorAll('.menu-item').forEach((el) => el.classList.remove('active'))
       li.classList.add('active')
     })
-    
+
     pluginList.appendChild(li)
   })
 }
@@ -355,34 +358,30 @@ function renderPluginList() {
 // Select plugin and render config form
 function selectPlugin(plugin) {
   activePlugin = plugin
-  
+
   // Show standard main content
   const mainContent = document.querySelector('.main-content')
   mainContent.classList.remove('hide')
-  
+
   // Hide iframe container
   const iframeContainer = document.getElementById('iframe-container')
   iframeContainer.classList.add('hide')
-  
+
   const iframe = document.getElementById('page-iframe')
   iframe.src = '' // Clear iframe src
-  
+
   // Clear highlighted system pages
-  document.querySelectorAll('#system-pages-list .menu-item').forEach(el => el.classList.remove('active'))
+  document.querySelectorAll('#system-pages-list .menu-item').forEach((el) => el.classList.remove('active'))
 
   selectedPluginTitle.textContent = `${plugin.name}`
   selectedPluginDesc.textContent = plugin.schema?.description || `管理插件 ${plugin.name} 的运行配置`
-  
-  pluginStatusBadge.className = `badge ${plugin.isEnabled ? '' : 'disabled'}`
-  pluginStatusBadge.textContent = plugin.isEnabled ? '已启用' : '未启用'
-  pluginStatusBadge.classList.remove('hide')
-  
+
   welcomeView.classList.add('hide')
   editorView.classList.remove('hide')
-  
+
   // Clear and render new form
   formFields.innerHTML = ''
-  
+
   if (plugin.schema && plugin.schema.properties) {
     renderForm(plugin.schema, plugin.config || {}, formFields)
   } else {
@@ -397,14 +396,18 @@ function selectPlugin(plugin) {
 // Render dynamic form based on Schema recursively
 function renderForm(schema, config, container, prefixPath = '') {
   const properties = schema.properties
-  
+
   for (const [key, prop] of Object.entries(properties)) {
+    if (prefixPath === '' && /^(enabled|enable|isEnabled)$/i.test(key)) {
+      continue
+    }
+
     const dataPath = prefixPath ? `${prefixPath}.${key}` : key
     const fieldId = `field-${dataPath.replace(/\./g, '-')}`
     const currentValue = getDeepValue(config, dataPath) ?? prop.default
-    
+
     const wrapper = document.createElement('div')
-    
+
     if (prop.type === 'boolean') {
       wrapper.className = 'toggle-group'
       wrapper.innerHTML = `
@@ -418,8 +421,7 @@ function renderForm(schema, config, container, prefixPath = '') {
         </label>
       `
       container.appendChild(wrapper)
-    } 
-    else if (prop.type === 'object') {
+    } else if (prop.type === 'object') {
       wrapper.className = 'nested-object-card'
       wrapper.innerHTML = `
         <div class="nested-object-title">${prop.title || key}</div>
@@ -427,13 +429,12 @@ function renderForm(schema, config, container, prefixPath = '') {
         <div id="container-${fieldId}" class="form-grid"></div>
       `
       container.appendChild(wrapper)
-      
+
       const nestedContainer = wrapper.querySelector(`#container-${fieldId}`)
       renderForm(prop, config, nestedContainer, dataPath)
-    } 
-    else if (prop.type === 'array') {
+    } else if (prop.type === 'array') {
       const itemType = prop.items?.type || 'string'
-      
+
       if (itemType === 'object') {
         wrapper.className = 'form-group array-object-group'
         wrapper.innerHTML = `
@@ -443,21 +444,21 @@ function renderForm(schema, config, container, prefixPath = '') {
           <button type="button" class="btn btn-secondary btn-sm add-array-item-btn" data-field-id="${fieldId}">+ 添加 ${prop.items.title || '项'}</button>
         `
         container.appendChild(wrapper)
-        
+
         const itemsContainer = wrapper.querySelector(`#array-container-${fieldId}`)
         const itemsList = currentValue || []
-        
+
         itemsList.forEach((item, index) => {
           renderArrayObjectItem(itemsContainer, prop.items, config, dataPath, index)
         })
-        
+
         const addBtn = wrapper.querySelector('.add-array-item-btn')
         addBtn.addEventListener('click', () => {
           const nextIndex = itemsContainer.children.length
           renderArrayObjectItem(itemsContainer, prop.items, config, dataPath, nextIndex)
           syncApiDropdowns(itemsContainer)
         })
-        
+
         itemsContainer.addEventListener('input', (e) => {
           if (e.target.matches('[data-path$=".name"]')) {
             syncApiDropdowns(itemsContainer)
@@ -465,17 +466,21 @@ function renderForm(schema, config, container, prefixPath = '') {
         })
       } else {
         // Check if it matches whitelist/blacklist keys or format group-list
-        const isGroupList = (itemType === 'integer' || itemType === 'number') && (
-          key.toLowerCase().includes('whitelist') ||
-          key.toLowerCase().includes('blacklist') ||
-          (prop.title && (prop.title.includes('白名单') || prop.title.includes('黑名单') || prop.title.toLowerCase().includes('whitelist') || prop.title.toLowerCase().includes('blacklist'))) ||
-          (prop.description && (prop.description.includes('白名单') || prop.description.includes('黑名单'))) ||
-          prop.format === 'group-list'
-        )
+        const isGroupList =
+          (itemType === 'integer' || itemType === 'number') &&
+          (key.toLowerCase().includes('whitelist') ||
+            key.toLowerCase().includes('blacklist') ||
+            (prop.title &&
+              (prop.title.includes('白名单') ||
+                prop.title.includes('黑名单') ||
+                prop.title.toLowerCase().includes('whitelist') ||
+                prop.title.toLowerCase().includes('blacklist'))) ||
+            (prop.description && (prop.description.includes('白名单') || prop.description.includes('黑名单'))) ||
+            prop.format === 'group-list')
 
         if (isGroupList) {
           wrapper.className = 'form-group group-list-form-group'
-          
+
           const isBlack = key.toLowerCase().includes('blacklist') || (prop.title && prop.title.includes('黑名单'))
           const selectedSet = new Set(Array.isArray(currentValue) ? currentValue.map(Number) : [])
           const initialValueString = Array.from(selectedSet).join(',')
@@ -530,8 +535,8 @@ function renderForm(schema, config, container, prefixPath = '') {
           const renderGrid = () => {
             gridEl.innerHTML = ''
             const query = searchInputEl.value.trim().toLowerCase()
-            
-            const filtered = botsGroups.filter(g => {
+
+            const filtered = botsGroups.filter((g) => {
               const matchesQuery = String(g.group_id).includes(query) || g.group_name.toLowerCase().includes(query)
               if (!matchesQuery) return false
 
@@ -546,13 +551,13 @@ function renderForm(schema, config, container, prefixPath = '') {
               return
             }
 
-            filtered.forEach(g => {
+            filtered.forEach((g) => {
               const isChecked = selectedSet.has(g.group_id)
               const card = document.createElement('div')
               card.className = `g-selector-card ${isChecked ? 'checked' : ''} ${isBlack ? 'is-blacklist' : ''}`
-              
+
               const avatarUrl = `https://p.qlogo.cn/gh/${g.group_id}/${g.group_id}/100`
-              
+
               card.innerHTML = `
                 <img class="g-avatar-img" src="${avatarUrl}" onerror="this.src='data:image/svg+xml;utf8,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2232%22 height=%2232%22 viewBox=%220 0 24 24%22 fill=%22none%22 stroke=%22%239ca3af%22 stroke-width=%222%22 stroke-linecap=%22round%22 stroke-linejoin=%22round%22><path d=%22M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2%22></path><circle cx=%229%22 cy=%227%22 r=%224%22></circle></svg>';" />
                 <div class="g-details">
@@ -600,9 +605,9 @@ function renderForm(schema, config, container, prefixPath = '') {
 
           searchInputEl.addEventListener('input', renderGrid)
 
-          wrapper.querySelectorAll('.g-filter-btn').forEach(btn => {
+          wrapper.querySelectorAll('.g-filter-btn').forEach((btn) => {
             btn.addEventListener('click', () => {
-              wrapper.querySelectorAll('.g-filter-btn').forEach(b => b.classList.remove('active'))
+              wrapper.querySelectorAll('.g-filter-btn').forEach((b) => b.classList.remove('active'))
               btn.classList.add('active')
               localFilter = btn.getAttribute('data-filter')
               renderGrid()
@@ -611,7 +616,7 @@ function renderForm(schema, config, container, prefixPath = '') {
 
           wrapper.querySelector('.select-all-g').addEventListener('click', () => {
             const query = searchInputEl.value.trim().toLowerCase()
-            botsGroups.forEach(g => {
+            botsGroups.forEach((g) => {
               const matchesQuery = String(g.group_id).includes(query) || g.group_name.toLowerCase().includes(query)
               if (matchesQuery) {
                 selectedSet.add(g.group_id)
@@ -623,7 +628,7 @@ function renderForm(schema, config, container, prefixPath = '') {
 
           wrapper.querySelector('.clear-all-g').addEventListener('click', () => {
             const query = searchInputEl.value.trim().toLowerCase()
-            botsGroups.forEach(g => {
+            botsGroups.forEach((g) => {
               const matchesQuery = String(g.group_id).includes(query) || g.group_name.toLowerCase().includes(query)
               if (matchesQuery) {
                 selectedSet.delete(g.group_id)
@@ -642,22 +647,23 @@ function renderForm(schema, config, container, prefixPath = '') {
             ${prop.description ? `<div class="description">${prop.description}</div>` : ''}
           `
           container.appendChild(wrapper)
-          
+
           if (key === 'models') {
             const textarea = wrapper.querySelector('.models-textarea')
             textarea.addEventListener('input', () => syncModelDropdowns(textarea))
           }
         }
       }
-    } 
-    else if (Array.isArray(prop.enum)) {
+    } else if (Array.isArray(prop.enum)) {
       wrapper.className = 'form-group'
-      const optionsHtml = prop.enum.map((val, idx) => {
-        const name = (prop.enumNames && prop.enumNames[idx]) || val
-        const selected = currentValue === val ? 'selected' : ''
-        return `<option value="${val}" ${selected}>${name}</option>`
-      }).join('')
-      
+      const optionsHtml = prop.enum
+        .map((val, idx) => {
+          const name = (prop.enumNames && prop.enumNames[idx]) || val
+          const selected = currentValue === val ? 'selected' : ''
+          return `<option value="${val}" ${selected}>${name}</option>`
+        })
+        .join('')
+
       wrapper.innerHTML = `
         <label for="${fieldId}">${prop.title || key}</label>
         <select id="${fieldId}" data-path="${dataPath}" data-schema-type="${prop.type}">
@@ -666,8 +672,7 @@ function renderForm(schema, config, container, prefixPath = '') {
         ${prop.description ? `<div class="description">${prop.description}</div>` : ''}
       `
       container.appendChild(wrapper)
-    }
-    else if (prop.type === 'integer' || prop.type === 'number') {
+    } else if (prop.type === 'integer' || prop.type === 'number') {
       wrapper.className = 'form-group'
       wrapper.innerHTML = `
         <label for="${fieldId}">${prop.title || key}</label>
@@ -675,22 +680,24 @@ function renderForm(schema, config, container, prefixPath = '') {
         ${prop.description ? `<div class="description">${prop.description}</div>` : ''}
       `
       container.appendChild(wrapper)
-    } 
-    else {
+    } else {
       // String input
       wrapper.className = 'form-group'
-      
+
       // Auto-detect if password input should be used
-      const isSecret = key.toLowerCase().includes('key') || 
-                       key.toLowerCase().includes('token') || 
-                       key.toLowerCase().includes('secret') || 
-                       key.toLowerCase().includes('password') || 
-                       prop.format === 'password'
-                       
+      const isSecret =
+        key.toLowerCase().includes('key') ||
+        key.toLowerCase().includes('token') ||
+        key.toLowerCase().includes('secret') ||
+        key.toLowerCase().includes('password') ||
+        prop.format === 'password'
+
       if (key === 'currentModel' && (config.models || (schema.properties && schema.properties.models))) {
         const modelsList = config.models || []
-        const optionsHtml = modelsList.map(m => `<option value="${m}" ${currentValue === m ? 'selected' : ''}>${m}</option>`).join('')
-        
+        const optionsHtml = modelsList
+          .map((m) => `<option value="${m}" ${currentValue === m ? 'selected' : ''}>${m}</option>`)
+          .join('')
+
         wrapper.innerHTML = `
           <label for="${fieldId}">${prop.title || key}</label>
           <select id="${fieldId}" data-path="${dataPath}" class="current-model-select" data-schema-type="${prop.type}">
@@ -699,11 +706,16 @@ function renderForm(schema, config, container, prefixPath = '') {
           ${prop.description ? `<div class="description">${prop.description}</div>` : ''}
         `
         container.appendChild(wrapper)
-      }
-      else if (key === 'currentApi' && (config.apis || (schema.properties && schema.properties.apis))) {
-        const apisList = Array.isArray(config.apis) ? config.apis.map(a => a.name) : (config.apis ? Object.keys(config.apis) : [])
-        const optionsHtml = apisList.map(a => `<option value="${a}" ${currentValue === a ? 'selected' : ''}>${a}</option>`).join('')
-        
+      } else if (key === 'currentApi' && (config.apis || (schema.properties && schema.properties.apis))) {
+        const apisList = Array.isArray(config.apis)
+          ? config.apis.map((a) => a.name)
+          : config.apis
+            ? Object.keys(config.apis)
+            : []
+        const optionsHtml = apisList
+          .map((a) => `<option value="${a}" ${currentValue === a ? 'selected' : ''}>${a}</option>`)
+          .join('')
+
         wrapper.innerHTML = `
           <label for="${fieldId}">${prop.title || key}</label>
           <select id="${fieldId}" data-path="${dataPath}" class="current-api-select" data-schema-type="${prop.type}">
@@ -712,8 +724,7 @@ function renderForm(schema, config, container, prefixPath = '') {
           ${prop.description ? `<div class="description">${prop.description}</div>` : ''}
         `
         container.appendChild(wrapper)
-      }
-      else {
+      } else {
         wrapper.innerHTML = `
           <label for="${fieldId}">${prop.title || key}</label>
           <input type="${isSecret ? 'password' : 'text'}" id="${fieldId}" data-path="${dataPath}" data-schema-type="${prop.type}" value="${currentValue !== undefined ? currentValue : ''}" placeholder="${prop.description || ''}">
@@ -737,33 +748,38 @@ resetBtn.addEventListener('click', () => {
 configForm.addEventListener('submit', async (e) => {
   e.preventDefault()
   if (!activePlugin) return
-  
+
   const saveBtn = document.getElementById('save-btn')
   saveBtn.disabled = true
   saveBtn.querySelector('span').textContent = '正在保存并重载...'
-  
+
   try {
-    const configData = {}
+    const configData = structuredClone(activePlugin.config || {})
     const inputs = formFields.querySelectorAll('[data-path]')
-    
-    inputs.forEach(input => {
+
+    inputs.forEach((input) => {
       const path = input.getAttribute('data-path')
       const schemaType = input.getAttribute('data-schema-type')
       let val
-      
+
       if (input.type === 'checkbox') {
         val = input.checked
       } else if (input.type === 'number' || schemaType === 'integer' || schemaType === 'number') {
         val = input.value === '' ? undefined : Number(input.value)
       } else if (input.getAttribute('data-type') === 'group-list') {
         const text = input.value.trim()
-        val = text ? text.split(',').map(Number).filter(n => !isNaN(n)) : []
+        val = text
+          ? text
+              .split(',')
+              .map(Number)
+              .filter((n) => !isNaN(n))
+          : []
       } else if (input.tagName.toLowerCase() === 'textarea') {
         const text = input.value.trim()
         if (text === '') {
           val = []
         } else {
-          val = text.split('\n').map(line => {
+          val = text.split('\n').map((line) => {
             const trimmed = line.trim()
             // Try to find the item schema to determine if it should be numbers
             // Since we parsed path, let's trace schema.properties.someArray.items.type
@@ -777,21 +793,21 @@ configForm.addEventListener('submit', async (e) => {
       } else {
         val = input.value
       }
-      
+
       if (val !== undefined) {
         setDeepValue(configData, path, val)
       }
     })
-    
+
     const res = await fetch(`/api/plugins/${activePlugin.name}/config`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${currentToken}`
+        Authorization: `Bearer ${currentToken}`,
       },
-      body: JSON.stringify({ config: configData })
+      body: JSON.stringify({ config: configData }),
     })
-    
+
     if (res.ok) {
       showToast(`插件 ${activePlugin.name} 配置已保存，并已成功热重载生效！`)
       await loadPlugins()

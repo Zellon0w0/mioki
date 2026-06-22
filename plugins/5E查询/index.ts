@@ -1,8 +1,26 @@
 import { definePlugin, getAbsPluginDir } from 'mioki'
-import puppeteer, { Browser } from 'puppeteer-core'
 import { join, dirname } from 'path'
 import { readFileSync, existsSync, mkdirSync, unlink } from 'fs'
 import { fileURLToPath } from 'url'
+import { sharedBrowser } from '../_shared/resource'
+
+async function runWithReaction<T>(event: any, task: () => Promise<T>, id = '60'): Promise<T> {
+  let reacted = false
+  if (typeof event?.addReaction === 'function') {
+    try {
+      await event.addReaction(id)
+      reacted = true
+    } catch {}
+  }
+
+  try {
+    return await task()
+  } finally {
+    if (reacted && typeof event?.delReaction === 'function') {
+      await event.delReaction(id).catch(() => {})
+    }
+  }
+}
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
@@ -12,7 +30,6 @@ const PLUGIN_VERSION = '1.0.0'
 
 interface PluginConfig {
   enabled: boolean
-  browserPath: string
   userAgent: string
   cookie: string
   whitelist: number[]
@@ -30,10 +47,10 @@ export default definePlugin({
     const loadConfig = (): PluginConfig => {
       const defaultConfig: PluginConfig = {
         enabled: true,
-        browserPath: '/usr/bin/chromium',
-        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0',
+        userAgent:
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0',
         cookie: '',
-        whitelist: []
+        whitelist: [],
       }
 
       if (!existsSync(configPath)) {
@@ -44,7 +61,7 @@ export default definePlugin({
         const fileContent = readFileSync(configPath, 'utf-8')
         return {
           ...defaultConfig,
-          ...JSON.parse(fileContent)
+          ...JSON.parse(fileContent),
         }
       } catch (err: any) {
         ctx.logger.error(`加载配置文件失败，回退到默认设置: ${err.message}`)
@@ -54,101 +71,25 @@ export default definePlugin({
 
     if (!existsSync(TEMP_DIR)) mkdirSync(TEMP_DIR, { recursive: true })
 
-    let globalBrowser: Browser | null = null
-    let browserLaunchPromise: Promise<Browser> | null = null
-
-function findChromeExecutable(configuredPath?: string): string {
-  if (configuredPath && existsSync(configuredPath)) {
-    return configuredPath
-  }
-  const localAppData = process.env.LOCALAPPDATA
-  const programFiles = process.env.PROGRAMFILES
-  const programFilesX86 = process.env['PROGRAMFILES(X86)']
-
-  const candidates = [
-    process.env.PUPPETEER_EXECUTABLE_PATH,
-    process.env.CHROME_PATH,
-    configuredPath,
-    '/usr/bin/chromium',
-    '/usr/bin/chromium-browser',
-    '/usr/bin/google-chrome',
-    '/usr/bin/google-chrome-stable',
-    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-    programFiles ? join(programFiles, 'Google/Chrome/Application/chrome.exe') : '',
-    programFilesX86 ? join(programFilesX86, 'Google/Chrome/Application/chrome.exe') : '',
-    localAppData ? join(localAppData, 'Google/Chrome/Application/chrome.exe') : '',
-  ].filter((c): c is string => Boolean(c))
-
-  const executablePath = candidates.find((c) => existsSync(c))
-  if (!executablePath) {
-    throw new Error('未找到 Chrome/Chromium，请设置 PUPPETEER_EXECUTABLE_PATH 或 CHROME_PATH')
-  }
-  return executablePath
-}
-
-    async function getBrowserInstance(browserPath: string): Promise<Browser> {
-      if (globalBrowser && globalBrowser.connected) {
-        return globalBrowser
-      }
-      globalBrowser = null
-
-      if (!browserLaunchPromise) {
-        browserLaunchPromise = puppeteer.launch({
-          executablePath: findChromeExecutable(browserPath),
-          headless: true,
-          args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
-          defaultViewport: { width: 1000, height: 1200, deviceScaleFactor: 2 }
-        }).then((b) => {
-          globalBrowser = b
-          browserLaunchPromise = null
-          b.on('disconnected', () => {
-            if (globalBrowser === b) {
-              globalBrowser = null
-            }
-          })
-          return b
-        }).catch((err) => {
-          browserLaunchPromise = null
-          throw err
-        })
-      }
-      return browserLaunchPromise
-    }
-
-    async function closeBrowserInstance(): Promise<void> {
-      if (browserLaunchPromise) {
-        try {
-          const b = await browserLaunchPromise
-          await b.close()
-        } catch {}
-        browserLaunchPromise = null
-        globalBrowser = null
-        return
-      }
-      if (globalBrowser) {
-        try {
-          await globalBrowser.close()
-        } catch {}
-        globalBrowser = null
-      }
-    }
-
     async function fetchWithHeaders(url: string, config: PluginConfig) {
       const res = await fetch(url, {
         headers: {
           'User-Agent': config.userAgent,
-          'Cookie': config.cookie,
-          'Referer': 'https://arena.5eplay.com/'
-        }
+          Cookie: config.cookie,
+          Referer: 'https://arena.5eplay.com/',
+        },
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       return res.json()
     }
 
-    async function getPlayerUuid(keywords: string, config: PluginConfig): Promise<{ uuid: string, username: string, avatar: string }> {
+    async function getPlayerUuid(
+      keywords: string,
+      config: PluginConfig,
+    ): Promise<{ uuid: string; username: string; avatar: string }> {
       const searchUrl = `https://arena.5eplay.com/api/search?keywords=${encodeURIComponent(keywords)}`
       const data = await fetchWithHeaders(searchUrl, config)
-      
+
       const user = data?.data?.user?.list?.[0]
       if (!user) throw new Error('未找到该玩家')
 
@@ -158,18 +99,18 @@ function findChromeExecutable(configuredPath?: string): string {
         method: 'POST',
         headers: {
           'User-Agent': config.userAgent,
-          'Cookie': config.cookie,
+          Cookie: config.cookie,
           'Content-Type': 'application/json',
-          'Referer': 'https://arena.5eplay.com/'
+          Referer: 'https://arena.5eplay.com/',
         },
         body: JSON.stringify({
-          trans: { domain: user.domain }
-        })
+          trans: { domain: user.domain },
+        }),
       })
 
       if (!transferRes.ok) throw new Error(`UUID 转换失败: HTTP ${transferRes.status}`)
       const transferData = await transferRes.json()
-      
+
       if (transferData.code !== 0 || !transferData.data?.uuid) {
         throw new Error('无法解析玩家 UUID')
       }
@@ -177,34 +118,39 @@ function findChromeExecutable(configuredPath?: string): string {
       return {
         uuid: transferData.data.uuid,
         username: user.username,
-        avatar: user.avatar_url.startsWith('http') ? user.avatar_url : `https://oss-arena.5eplay.com/${user.avatar_url.replace(/^\//, '')}`
+        avatar: user.avatar_url.startsWith('http')
+          ? user.avatar_url
+          : `https://oss-arena.5eplay.com/${user.avatar_url.replace(/^\//, '')}`,
       }
     }
 
-    async function generate5EImage(playerInfo: any, careerData: any, matches: any[], config: PluginConfig): Promise<string> {
-      const browser = await getBrowserInstance(config.browserPath)
-      const page = await browser.newPage()
+    async function generate5EImage(
+      playerInfo: any,
+      careerData: any,
+      matches: any[],
+      config: PluginConfig,
+    ): Promise<string> {
+      return sharedBrowser.withPage(
+        async (page) => {
+          const fontStyle = `"汉仪文黑-85W", "HYWenHei-85W", "汉仪文黑", "HYWenHei", "Microsoft YaHei", sans-serif`
 
-      try {
-        const fontStyle = `"汉仪文黑-85W", "HYWenHei-85W", "汉仪文黑", "HYWenHei", "Microsoft YaHei", sans-serif`
+          const formatDate = (timestamp: string | number) => {
+            const date = new Date(Number(timestamp) * 1000)
+            const Y = date.getFullYear()
+            const M = String(date.getMonth() + 1).padStart(2, '0')
+            const D = String(date.getDate()).padStart(2, '0')
+            const h = String(date.getHours()).padStart(2, '0')
+            const m = String(date.getMinutes()).padStart(2, '0')
+            return `${Y}-${M}-${D} ${h}:${m}`
+          }
 
-      const formatDate = (timestamp: string | number) => {
-        const date = new Date(Number(timestamp) * 1000)
-        const Y = date.getFullYear()
-        const M = String(date.getMonth() + 1).padStart(2, '0')
-        const D = String(date.getDate()).padStart(2, '0')
-        const h = String(date.getHours()).padStart(2, '0')
-        const m = String(date.getMinutes()).padStart(2, '0')
-        return `${Y}-${M}-${D} ${h}:${m}`
-      }
+          const formatDuration = (start: string | number, end: string | number) => {
+            const durationMs = Number(end) - Number(start)
+            const minutes = Math.floor(durationMs / 60)
+            return `${minutes}min`
+          }
 
-      const formatDuration = (start: string | number, end: string | number) => {
-        const durationMs = (Number(end) - Number(start))
-        const minutes = Math.floor(durationMs / 60)
-        return `${minutes}min`
-      }
-
-      const htmlContent = `
+          const htmlContent = `
         <html>
           <head>
             <style>
@@ -281,11 +227,14 @@ function findChromeExecutable(configuredPath?: string): string {
 
               <div class="recent-title">Recent 5 Matches</div>
               <div class="match-list">
-                ${matches.slice(0, 5).map(m => `
+                ${matches
+                  .slice(0, 5)
+                  .map(
+                    (m) => `
                   <div class="match-item">
                     <div class="match-main">
-                      <div class="match-result ${m.is_win ? 'result-win' : (m.is_tie ? 'result-tie' : 'result-loss')}">
-                        ${m.is_win ? 'W' : (m.is_tie ? 'T' : 'L')}
+                      <div class="match-result ${m.is_win ? 'result-win' : m.is_tie ? 'result-tie' : 'result-loss'}">
+                        ${m.is_win ? 'W' : m.is_tie ? 'T' : 'L'}
                       </div>
                       <div class="match-info">
                         <div class="match-map-row">
@@ -309,7 +258,9 @@ function findChromeExecutable(configuredPath?: string): string {
                       </div>
                     </div>
                   </div>
-                `).join('')}
+                `,
+                  )
+                  .join('')}
               </div>
 
               <div class="footer">
@@ -320,20 +271,23 @@ function findChromeExecutable(configuredPath?: string): string {
         </html>
       `
 
-      await page.setContent(htmlContent, { waitUntil: 'networkidle0' })
-        const outputPath = join(TEMP_DIR, `5e-${Date.now()}.png`)
-        const container = await page.$('.container')
-        if (container) {
-          await container.screenshot({ path: outputPath, type: 'png', omitBackground: true })
-        } else {
-          await page.screenshot({ path: outputPath, fullPage: true, type: 'png' })
-        }
-        return outputPath
-      } finally {
-        await page.close()
-      }
+          await page.setContent(htmlContent, { waitUntil: 'networkidle0' })
+          const outputPath = join(TEMP_DIR, `5e-${Date.now()}.png`)
+          const container = await page.$('.container')
+          if (container) {
+            await container.screenshot({ path: outputPath, type: 'png', omitBackground: true })
+          } else {
+            await page.screenshot({ path: outputPath, fullPage: true, type: 'png' })
+          }
+          return outputPath
+        },
+        {
+          label: `${PLUGIN_NAME} image render`,
+          timeoutMs: 35_000,
+          viewport: { width: 1000, height: 1200, deviceScaleFactor: 2 },
+        },
+      )
     }
-
 
     const config = loadConfig()
 
@@ -346,46 +300,49 @@ function findChromeExecutable(configuredPath?: string): string {
         const query = text.replace('#5e', '').trim()
         if (!query) return e.reply('请输入要查询的 5E 玩家名称')
 
-        let imgPath: string | null = null
-        try {
-          ctx.logger.info(`[5E查询] 正在搜索玩家: ${query}`)
-          const playerInfo = await getPlayerUuid(query, config)
-          
-          ctx.logger.info(`[5E查询] 正在获取生涯数据和比赛记录: ${playerInfo.uuid}`)
-          const careerUrl = `https://gate.5eplay.com/crane/http/api/data/player_career?uuid=${playerInfo.uuid}`
-          const matchUrl = `https://gate.5eplay.com/crane/http/api/data/player_match?uuid=${playerInfo.uuid}`
-          
-          const [careerRes, matchRes] = await Promise.all([
-            fetchWithHeaders(careerUrl, config),
-            fetchWithHeaders(matchUrl, config)
-          ])
-          
-          if (!careerRes.success) throw new Error(careerRes.message || '获取生涯数据失败')
-          if (!matchRes.success) throw new Error(matchRes.message || '获取比赛记录失败')
+        await runWithReaction(e, async () => {
+          let imgPath: string | null = null
+          try {
+            ctx.logger.info(`[5E查询] 正在搜索玩家: ${query}`)
+            const playerInfo = await getPlayerUuid(query, config)
 
-          imgPath = await generate5EImage(playerInfo, careerRes.data.career_data, matchRes.data.match_data || [], config)
-          await e.reply(ctx.segment.image(`file://${imgPath}`))
-        } catch (err) {
-          ctx.logger.error(`[5E查询] 查询失败: ${err}`)
-          await e.reply(`查询失败: ${err instanceof Error ? err.message : String(err)}`)
-        } finally {
-          if (imgPath) {
-            const fileToDelete = imgPath
-            const timer = setTimeout(() => {
-              try {
-                if (existsSync(fileToDelete)) unlink(fileToDelete, () => {})
-              } catch (err) {
-                ctx.logger.error(`[5E查询] 清理临时文件失败: ${err}`)
-              }
-            }, 15000)
-            ctx.clears.add(() => clearTimeout(timer))
+            ctx.logger.info(`[5E查询] 正在获取生涯数据和比赛记录: ${playerInfo.uuid}`)
+            const careerUrl = `https://gate.5eplay.com/crane/http/api/data/player_career?uuid=${playerInfo.uuid}`
+            const matchUrl = `https://gate.5eplay.com/crane/http/api/data/player_match?uuid=${playerInfo.uuid}`
+
+            const [careerRes, matchRes] = await Promise.all([
+              fetchWithHeaders(careerUrl, config),
+              fetchWithHeaders(matchUrl, config),
+            ])
+
+            if (!careerRes.success) throw new Error(careerRes.message || '获取生涯数据失败')
+            if (!matchRes.success) throw new Error(matchRes.message || '获取比赛记录失败')
+
+            imgPath = await generate5EImage(
+              playerInfo,
+              careerRes.data.career_data,
+              matchRes.data.match_data || [],
+              config,
+            )
+            await e.reply(ctx.segment.image(`file://${imgPath}`))
+          } catch (err) {
+            ctx.logger.error(`[5E查询] 查询失败: ${err}`)
+            await e.reply(`查询失败: ${err instanceof Error ? err.message : String(err)}`)
+          } finally {
+            if (imgPath) {
+              const fileToDelete = imgPath
+              const timer = setTimeout(() => {
+                try {
+                  if (existsSync(fileToDelete)) unlink(fileToDelete, () => {})
+                } catch (err) {
+                  ctx.logger.error(`[5E查询] 清理临时文件失败: ${err}`)
+                }
+              }, 15000)
+              ctx.clears.add(() => clearTimeout(timer))
+            }
           }
-        }
+        })
       }
     })
-
-    return async () => {
-      await closeBrowserInstance()
-    }
-  }
+  },
 })

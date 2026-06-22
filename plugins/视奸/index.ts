@@ -1,8 +1,26 @@
 import { definePlugin, getAbsPluginDir } from 'mioki'
-import puppeteer, { Browser } from 'puppeteer-core'
 import { join, dirname } from 'path'
 import { readFileSync, writeFileSync, existsSync, mkdirSync, unlink } from 'fs'
 import { fileURLToPath } from 'url'
+import { sharedBrowser } from '../_shared/resource'
+
+async function runWithReaction<T>(event: any, task: () => Promise<T>, id = '60'): Promise<T> {
+  let reacted = false
+  if (typeof event?.addReaction === 'function') {
+    try {
+      await event.addReaction(id)
+      reacted = true
+    } catch {}
+  }
+
+  try {
+    return await task()
+  } finally {
+    if (reacted && typeof event?.delReaction === 'function') {
+      await event.delReaction(id).catch(() => {})
+    }
+  }
+}
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
@@ -13,7 +31,6 @@ const PLUGIN_VERSION = '1.0.0'
 interface PluginConfig {
   enabled: boolean
   whitelist: number[]
-  browserPath: string
   apiKey: string
 }
 
@@ -21,106 +38,15 @@ interface PluginData {
   bindings: Record<string, string>
 }
 
-let globalBrowser: Browser | null = null
-let browserLaunchPromise: Promise<Browser> | null = null
+async function generateStalkImage(profile: any, games: any[]): Promise<string> {
+  return sharedBrowser.withPage(
+    async (page) => {
+      const fontStyle = `"汉仪文黑-85W", "HYWenHei-85W", "汉仪文黑", "HYWenHei", "Microsoft YaHei", sans-serif`
 
-function findChromeExecutable(configuredPath?: string): string {
-  if (configuredPath && existsSync(configuredPath)) {
-    return configuredPath
-  }
-  const localAppData = process.env.LOCALAPPDATA
-  const programFiles = process.env.PROGRAMFILES
-  const programFilesX86 = process.env['PROGRAMFILES(X86)']
+      // 过滤出两周内玩过的游戏
+      const recentGames = games.filter((g) => (g.playtime.recent || g.playtime.recent_minutes) > 0)
 
-  const candidates = [
-    process.env.PUPPETEER_EXECUTABLE_PATH,
-    process.env.CHROME_PATH,
-    configuredPath,
-    '/usr/bin/chromium',
-    '/usr/bin/chromium-browser',
-    '/usr/bin/google-chrome',
-    '/usr/bin/google-chrome-stable',
-    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-    programFiles ? join(programFiles, 'Google/Chrome/Application/chrome.exe') : '',
-    programFilesX86 ? join(programFilesX86, 'Google/Chrome/Application/chrome.exe') : '',
-    localAppData ? join(localAppData, 'Google/Chrome/Application/chrome.exe') : '',
-  ].filter((c): c is string => Boolean(c))
-
-  const executablePath = candidates.find((c) => existsSync(c))
-  if (!executablePath) {
-    throw new Error('未找到 Chrome/Chromium，请设置 PUPPETEER_EXECUTABLE_PATH 或 CHROME_PATH')
-  }
-  return executablePath
-}
-
-async function getBrowserInstance(browserPath: string): Promise<Browser> {
-  if (globalBrowser && globalBrowser.connected) {
-    return globalBrowser
-  }
-  globalBrowser = null
-
-  if (!browserLaunchPromise) {
-    browserLaunchPromise = puppeteer.launch({
-      executablePath: findChromeExecutable(browserPath),
-      headless: true,
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-gpu',
-        '--font-render-hinting=none'
-      ],
-      defaultViewport: {
-        width: 1000,
-        height: 1000,
-        deviceScaleFactor: 2
-      }
-    }).then((b) => {
-      globalBrowser = b
-      browserLaunchPromise = null
-      b.on('disconnected', () => {
-        if (globalBrowser === b) {
-          globalBrowser = null
-        }
-      })
-      return b
-    }).catch((err) => {
-      browserLaunchPromise = null
-      throw err
-    })
-  }
-  return browserLaunchPromise
-}
-
-async function closeBrowserInstance(): Promise<void> {
-  if (browserLaunchPromise) {
-    try {
-      const b = await browserLaunchPromise
-      await b.close()
-    } catch {}
-    browserLaunchPromise = null
-    globalBrowser = null
-    return
-  }
-  if (globalBrowser) {
-    try {
-      await globalBrowser.close()
-    } catch {}
-    globalBrowser = null
-  }
-}
-
-async function generateStalkImage(profile: any, games: any[], browserPath: string): Promise<string> {
-  const browser = await getBrowserInstance(browserPath)
-  const page = await browser.newPage()
-
-  try {
-    const fontStyle = `"汉仪文黑-85W", "HYWenHei-85W", "汉仪文黑", "HYWenHei", "Microsoft YaHei", sans-serif`
-
-  // 过滤出两周内玩过的游戏
-  const recentGames = games.filter(g => (g.playtime.recent || g.playtime.recent_minutes) > 0)
-
-  const htmlContent = `
+      const htmlContent = `
     <html>
       <head>
         <style>
@@ -229,7 +155,11 @@ async function generateStalkImage(profile: any, games: any[], browserPath: strin
           
           <div class="section-title">最近两周游戏记录</div>
           <div class="game-list">
-            ${recentGames.length > 0 ? recentGames.map(game => `
+            ${
+              recentGames.length > 0
+                ? recentGames
+                    .map(
+                      (game) => `
               <div class="game-item">
                 <img class="game-header" src="${game.image.header}">
                 <div class="game-info">
@@ -240,26 +170,34 @@ async function generateStalkImage(profile: any, games: any[], browserPath: strin
                   </div>
                 </div>
               </div>
-            `).join('') : '<div class="empty">两周内没有游戏记录</div>'}
+            `,
+                    )
+                    .join('')
+                : '<div class="empty">两周内没有游戏记录</div>'
+            }
           </div>
         </div>
       </body>
     </html>
   `
 
-  await page.setContent(htmlContent, { waitUntil: 'networkidle0' })
-  const tempDir = join(getAbsPluginDir(), '视奸', 'temp')
-  const outputPath = join(tempDir, `stalk-${Date.now()}.png`)
-  const container = await page.$('.container')
-  if (container) {
-    await container.screenshot({ path: outputPath, type: 'png', omitBackground: true })
-  } else {
-    await page.screenshot({ path: outputPath, fullPage: true, type: 'png' })
-  }
-  return outputPath
-  } finally {
-    await page.close()
-  }
+      await page.setContent(htmlContent, { waitUntil: 'networkidle0' })
+      const tempDir = join(getAbsPluginDir(), '视奸', 'temp')
+      const outputPath = join(tempDir, `stalk-${Date.now()}.png`)
+      const container = await page.$('.container')
+      if (container) {
+        await container.screenshot({ path: outputPath, type: 'png', omitBackground: true })
+      } else {
+        await page.screenshot({ path: outputPath, fullPage: true, type: 'png' })
+      }
+      return outputPath
+    },
+    {
+      label: `${PLUGIN_NAME} image render`,
+      timeoutMs: 35_000,
+      viewport: { width: 1000, height: 1000, deviceScaleFactor: 2 },
+    },
+  )
 }
 
 export default definePlugin({
@@ -274,8 +212,7 @@ export default definePlugin({
       const defaultConfig: PluginConfig = {
         enabled: true,
         whitelist: [],
-        browserPath: '/usr/bin/chromium',
-        apiKey: ''
+        apiKey: '',
       }
 
       if (!existsSync(configPath)) {
@@ -293,7 +230,7 @@ export default definePlugin({
 
     const loadData = (): PluginData => {
       const defaultData: PluginData = {
-        bindings: {}
+        bindings: {},
       }
 
       if (!existsSync(dataPath)) {
@@ -382,75 +319,73 @@ export default definePlugin({
           return e.reply('未配置 Steam API 密钥，请在 WebUI 面板中配置后再试。')
         }
 
-        let steamId = query
-        // 如果查询的是昵称，则转换为 SteamID
-        if (bindings[query]) {
-          steamId = bindings[query]
-        }
+        await runWithReaction(e, async () => {
+          let steamId = query
+          // 如果查询的是昵称，则转换为 SteamID
+          if (bindings[query]) {
+            steamId = bindings[query]
+          }
 
-        // 检查是否需要通过 API 转换 ID (非 17 位数字且非绑定昵称)
-        if (!/^\d{17}$/.test(steamId)) {
-          ctx.logger.info(`[视奸] 尝试转换 Steam ID: ${steamId}`)
-          try {
-            const convRes = await fetch(`https://api.viki.moe/steam/id2id/${steamId}?key=${config.apiKey}`)
-            if (convRes.ok) {
-              const convData = await convRes.json()
-              if (convData.steam_id_64) {
-                steamId = convData.steam_id_64
-                ctx.logger.info(`[视奸] 转换成功: ${query} -> ${steamId}`)
+          // 检查是否需要通过 API 转换 ID (非 17 位数字且非绑定昵称)
+          if (!/^\d{17}$/.test(steamId)) {
+            ctx.logger.info(`[视奸] 尝试转换 Steam ID: ${steamId}`)
+            try {
+              const convRes = await fetch(`https://api.viki.moe/steam/id2id/${steamId}?key=${config.apiKey}`)
+              if (convRes.ok) {
+                const convData = await convRes.json()
+                if (convData.steam_id_64) {
+                  steamId = convData.steam_id_64
+                  ctx.logger.info(`[视奸] 转换成功: ${query} -> ${steamId}`)
+                }
               }
+            } catch (err) {
+              ctx.logger.warn(`[视奸] ID 转换请求失败: ${err}`)
             }
+          }
+
+          // 最后的 SteamID 格式验证
+          if (!/^\d{17}$/.test(steamId)) {
+            // 如果依然不是 17 位数字，说明可能是普通文本或转换失败
+            return e.reply(`未找到有效的 SteamID 或绑定：${query}`)
+          }
+
+          ctx.logger.info(`[视奸] 正在查询 SteamID: ${steamId}`)
+          let imgPath: string | null = null
+          try {
+            // 并行获取用户信息和游戏记录
+            const [profileRes, gamesRes] = await Promise.all([
+              fetch(`https://api.viki.moe/steam/${steamId}?key=${config.apiKey}`),
+              fetch(`https://api.viki.moe/steam/${steamId}/recently-played?key=${config.apiKey}`),
+            ])
+
+            if (!profileRes.ok) throw new Error('无法获取用户信息')
+            if (!gamesRes.ok) throw new Error('无法获取游戏记录')
+
+            const profile = await profileRes.json()
+            const games = await gamesRes.json()
+
+            if (profile.error) throw new Error(profile.error)
+
+            imgPath = await generateStalkImage(profile, games)
+            await e.reply(ctx.segment.image(`file://${imgPath}`))
           } catch (err) {
-            ctx.logger.warn(`[视奸] ID 转换请求失败: ${err}`)
+            ctx.logger.error(`[视奸] 查询失败: ${err}`)
+            await e.reply(`查询失败: ${err instanceof Error ? err.message : String(err)}`)
+          } finally {
+            if (imgPath) {
+              const fileToDelete = imgPath
+              const timer = setTimeout(() => {
+                try {
+                  if (existsSync(fileToDelete)) unlink(fileToDelete, () => {})
+                } catch (err) {
+                  ctx.logger.error(`[视奸] 清理临时文件失败: ${err}`)
+                }
+              }, 15000)
+              ctx.clears.add(() => clearTimeout(timer))
+            }
           }
-        }
-
-        // 最后的 SteamID 格式验证
-        if (!/^\d{17}$/.test(steamId)) {
-          // 如果依然不是 17 位数字，说明可能是普通文本或转换失败
-          return e.reply(`未找到有效的 SteamID 或绑定：${query}`)
-        }
-
-        ctx.logger.info(`[视奸] 正在查询 SteamID: ${steamId}`)
-        let imgPath: string | null = null
-        try {
-          // 并行获取用户信息和游戏记录
-          const [profileRes, gamesRes] = await Promise.all([
-            fetch(`https://api.viki.moe/steam/${steamId}?key=${config.apiKey}`),
-            fetch(`https://api.viki.moe/steam/${steamId}/recently-played?key=${config.apiKey}`)
-          ])
-
-          if (!profileRes.ok) throw new Error('无法获取用户信息')
-          if (!gamesRes.ok) throw new Error('无法获取游戏记录')
-
-          const profile = await profileRes.json()
-          const games = await gamesRes.json()
-
-          if (profile.error) throw new Error(profile.error)
-
-          imgPath = await generateStalkImage(profile, games, config.browserPath)
-          await e.reply(ctx.segment.image(`file://${imgPath}`))
-        } catch (err) {
-          ctx.logger.error(`[视奸] 查询失败: ${err}`)
-          await e.reply(`查询失败: ${err instanceof Error ? err.message : String(err)}`)
-        } finally {
-          if (imgPath) {
-            const fileToDelete = imgPath
-            const timer = setTimeout(() => {
-              try {
-                if (existsSync(fileToDelete)) unlink(fileToDelete, () => {})
-              } catch (err) {
-                ctx.logger.error(`[视奸] 清理临时文件失败: ${err}`)
-              }
-            }, 15000)
-            ctx.clears.add(() => clearTimeout(timer))
-          }
-        }
+        })
       }
     })
-
-    return async () => {
-      await closeBrowserInstance()
-    }
-  }
+  },
 })

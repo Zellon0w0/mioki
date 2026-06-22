@@ -10,17 +10,11 @@
       "default": true,
       "description": "是否启用5E查询插件"
     },
-    "browserPath": {
-      "title": "Chromium 路径",
-      "type": "string",
-      "default": "/usr/bin/chromium",
-      "description": "Puppeteer 使用的 Chromium/Chrome 可执行文件路径"
-    },
     "userAgent": {
       "title": "User-Agent",
       "type": "string",
       "default": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0",
-      "description": "请求和浏览器使用的 User-Agent 标头"
+      "description": "接口请求使用的 User-Agent 标头"
     },
     "cookie": {
       "title": "5E Cookie",
@@ -35,6 +29,5 @@
       },
       "description": "允许响应该命令的 QQ 群号，每行一个"
     }
-  },
-  "required": ["browserPath"]
+  }
 }

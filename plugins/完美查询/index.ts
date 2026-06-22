@@ -1,8 +1,26 @@
 import { definePlugin, getAbsPluginDir } from 'mioki'
-import puppeteer, { Browser } from 'puppeteer-core'
 import { join, dirname } from 'path'
 import { readFileSync, existsSync, mkdirSync, unlink } from 'fs'
 import { fileURLToPath } from 'url'
+import { sharedBrowser } from '../_shared/resource'
+
+async function runWithReaction<T>(event: any, task: () => Promise<T>, id = '60'): Promise<T> {
+  let reacted = false
+  if (typeof event?.addReaction === 'function') {
+    try {
+      await event.addReaction(id)
+      reacted = true
+    } catch {}
+  }
+
+  try {
+    return await task()
+  } finally {
+    if (reacted && typeof event?.delReaction === 'function') {
+      await event.delReaction(id).catch(() => {})
+    }
+  }
+}
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
@@ -12,7 +30,6 @@ const PLUGIN_VERSION = '1.0.0'
 
 interface PluginConfig {
   enabled: boolean
-  browserPath: string
   userAgent: string
   appVersion: string
   token: string
@@ -32,12 +49,12 @@ export default definePlugin({
     const loadConfig = (): PluginConfig => {
       const defaultConfig: PluginConfig = {
         enabled: true,
-        browserPath: '/usr/bin/chromium',
-        userAgent: 'Mozilla/5.0 (Linux; Android 12; SM-G9730 Build/QP1A.190711.020; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/92.0.4515.131 Mobile Safari/537.36 WMPVP/3.5.4.172',
+        userAgent:
+          'Mozilla/5.0 (Linux; Android 12; SM-G9730 Build/QP1A.190711.020; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/92.0.4515.131 Mobile Safari/537.36 WMPVP/3.5.4.172',
         appVersion: '3.5.4.172',
         token: '',
         mySteamId: '',
-        whitelist: []
+        whitelist: [],
       }
 
       if (!existsSync(configPath)) {
@@ -48,7 +65,7 @@ export default definePlugin({
         const fileContent = readFileSync(configPath, 'utf-8')
         return {
           ...defaultConfig,
-          ...JSON.parse(fileContent)
+          ...JSON.parse(fileContent),
         }
       } catch (err: any) {
         ctx.logger.error(`加载配置文件失败，回退到默认设置: ${err.message}`)
@@ -58,143 +75,74 @@ export default definePlugin({
 
     if (!existsSync(TEMP_DIR)) mkdirSync(TEMP_DIR, { recursive: true })
 
-    let globalBrowser: Browser | null = null
-    let browserLaunchPromise: Promise<Browser> | null = null
-
-function findChromeExecutable(configuredPath?: string): string {
-  if (configuredPath && existsSync(configuredPath)) {
-    return configuredPath
-  }
-  const localAppData = process.env.LOCALAPPDATA
-  const programFiles = process.env.PROGRAMFILES
-  const programFilesX86 = process.env['PROGRAMFILES(X86)']
-
-  const candidates = [
-    process.env.PUPPETEER_EXECUTABLE_PATH,
-    process.env.CHROME_PATH,
-    configuredPath,
-    '/usr/bin/chromium',
-    '/usr/bin/chromium-browser',
-    '/usr/bin/google-chrome',
-    '/usr/bin/google-chrome-stable',
-    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-    programFiles ? join(programFiles, 'Google/Chrome/Application/chrome.exe') : '',
-    programFilesX86 ? join(programFilesX86, 'Google/Chrome/Application/chrome.exe') : '',
-    localAppData ? join(localAppData, 'Google/Chrome/Application/chrome.exe') : '',
-  ].filter((c): c is string => Boolean(c))
-
-  const executablePath = candidates.find((c) => existsSync(c))
-  if (!executablePath) {
-    throw new Error('未找到 Chrome/Chromium，请设置 PUPPETEER_EXECUTABLE_PATH 或 CHROME_PATH')
-  }
-  return executablePath
-}
-
-    async function getBrowserInstance(browserPath: string): Promise<Browser> {
-      if (globalBrowser && globalBrowser.connected) {
-        return globalBrowser
-      }
-      globalBrowser = null
-
-      if (!browserLaunchPromise) {
-        browserLaunchPromise = puppeteer.launch({
-          executablePath: findChromeExecutable(browserPath),
-          headless: true,
-          args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
-          defaultViewport: { width: 1000, height: 1200, deviceScaleFactor: 2 }
-        }).then((b) => {
-          globalBrowser = b
-          browserLaunchPromise = null
-          b.on('disconnected', () => {
-            if (globalBrowser === b) {
-              globalBrowser = null
-            }
-          })
-          return b
-        }).catch((err) => {
-          browserLaunchPromise = null
-          throw err
-        })
-      }
-      return browserLaunchPromise
-    }
-
-    async function closeBrowserInstance(): Promise<void> {
-      if (browserLaunchPromise) {
-        try {
-          const b = await browserLaunchPromise
-          await b.close()
-        } catch {}
-        browserLaunchPromise = null
-        globalBrowser = null
-        return
-      }
-      if (globalBrowser) {
-        try {
-          await globalBrowser.close()
-        } catch {}
-        globalBrowser = null
-      }
-    }
-
     async function fetchPerfectAPI(url: string, payload: any, config: PluginConfig) {
       const res = await fetch(url, {
         method: 'POST',
         headers: {
           'User-Agent': config.userAgent,
-          'appversion': config.appVersion,
-          'token': config.token,
-          'Content-Type': 'application/json'
+          appversion: config.appVersion,
+          token: config.token,
+          'Content-Type': 'application/json',
         },
-        body: JSON.stringify(payload)
+        body: JSON.stringify(payload),
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       return res.json()
     }
 
-    async function getPlayerInfo(keywords: string, config: PluginConfig): Promise<{ steamId: string, username: string, avatar: string }> {
+    async function getPlayerInfo(
+      keywords: string,
+      config: PluginConfig,
+    ): Promise<{ steamId: string; username: string; avatar: string }> {
       const searchUrl = 'https://appengine.wmpvp.com/steamcn/app/search/user'
-      const data = await fetchPerfectAPI(searchUrl, {
-        keyword: keywords,
-        page: 1
-      }, config)
-      
+      const data = await fetchPerfectAPI(
+        searchUrl,
+        {
+          keyword: keywords,
+          page: 1,
+        },
+        config,
+      )
+
       const user = data?.result?.[0]
       if (!user || data.code !== 1) throw new Error('未找到该玩家')
 
       return {
         steamId: user.steamId,
         username: user.pvpNickName,
-        avatar: user.pvpAvatar
+        avatar: user.pvpAvatar,
       }
     }
 
-    async function generatePerfectImage(playerInfo: any, careerData: any, matches: any[], config: PluginConfig): Promise<string> {
-      const browser = await getBrowserInstance(config.browserPath)
-      const page = await browser.newPage()
+    async function generatePerfectImage(
+      playerInfo: any,
+      careerData: any,
+      matches: any[],
+      config: PluginConfig,
+    ): Promise<string> {
+      return sharedBrowser.withPage(
+        async (page) => {
+          const fontStyle = `"汉仪文黑-85W", "HYWenHei-85W", "汉仪文黑", "HYWenHei", "Microsoft YaHei", sans-serif`
 
-      try {
-        const fontStyle = `"汉仪文黑-85W", "HYWenHei-85W", "汉仪文黑", "HYWenHei", "Microsoft YaHei", sans-serif`
+          const formatDate = (timestamp: string | number) => {
+            const date = new Date(timestamp)
+            const Y = date.getFullYear()
+            const M = String(date.getMonth() + 1).padStart(2, '0')
+            const D = String(date.getDate()).padStart(2, '0')
+            const h = String(date.getHours()).padStart(2, '0')
+            const m = String(date.getMinutes()).padStart(2, '0')
+            return `${Y}-${M}-${D} ${h}:${m}`
+          }
 
-      const formatDate = (timestamp: string | number) => {
-        const date = new Date(timestamp)
-        const Y = date.getFullYear()
-        const M = String(date.getMonth() + 1).padStart(2, '0')
-        const D = String(date.getDate()).padStart(2, '0')
-        const h = String(date.getHours()).padStart(2, '0')
-        const m = String(date.getMinutes()).padStart(2, '0')
-        return `${Y}-${M}-${D} ${h}:${m}`
-      }
+          const formatDuration = (start: string, end: string) => {
+            const startTime = new Date(start).getTime()
+            const endTime = new Date(end).getTime()
+            const durationMs = endTime - startTime
+            const minutes = Math.floor(durationMs / 60000)
+            return `${minutes}min`
+          }
 
-      const formatDuration = (start: string, end: string) => {
-        const startTime = new Date(start).getTime()
-        const endTime = new Date(end).getTime()
-        const durationMs = endTime - startTime
-        const minutes = Math.floor(durationMs / 60000)
-        return `${minutes}min`
-      }
-
-      const htmlContent = `
+          const htmlContent = `
         <html>
           <head>
             <style>
@@ -264,20 +212,22 @@ function findChromeExecutable(configuredPath?: string): string {
                 <div class="stat-item"><div class="label">生涯RWS</div><div class="value">${careerData.rws}</div></div>
                 <div class="stat-item"><div class="label">MATCHES</div><div class="value">${careerData.cnt}</div></div>
                 <div class="stat-item"><div class="label">生涯ADR</div><div class="value">${careerData.adr}</div></div>
-                <div class="stat-item"><div class="label">生涯KPR</div><div class="value">${(careerData.kills / (careerData.kills + careerData.deaths + careerData.assists) * 1.5).toFixed(2) || 'N/A'}</div></div>
+                <div class="stat-item"><div class="label">生涯KPR</div><div class="value">${((careerData.kills / (careerData.kills + careerData.deaths + careerData.assists)) * 1.5).toFixed(2) || 'N/A'}</div></div>
                 <div class="stat-item"><div class="label">WINS</div><div class="value">${Math.round(careerData.cnt * careerData.winRate)}</div></div>
               </div>
 
               <div class="recent-title">Recent 5 Matches</div>
               <div class="match-list">
-                ${matches.slice(0, 5).map(m => {
-                  const isWin = m.winTeam === m.team
-                  const isTie = m.winTeam === 0
-                  return `
+                ${matches
+                  .slice(0, 5)
+                  .map((m) => {
+                    const isWin = m.winTeam === m.team
+                    const isTie = m.winTeam === 0
+                    return `
                   <div class="match-item">
                     <div class="match-main">
-                      <div class="match-result ${isWin ? 'result-win' : (isTie ? 'result-tie' : 'result-loss')}">
-                        ${isWin ? 'W' : (isTie ? 'T' : 'L')}
+                      <div class="match-result ${isWin ? 'result-win' : isTie ? 'result-tie' : 'result-loss'}">
+                        ${isWin ? 'W' : isTie ? 'T' : 'L'}
                       </div>
                       <div class="match-info">
                         <div class="match-map-row">
@@ -301,7 +251,9 @@ function findChromeExecutable(configuredPath?: string): string {
                       </div>
                     </div>
                   </div>
-                `}).join('')}
+                `
+                  })
+                  .join('')}
               </div>
 
               <div class="footer">
@@ -312,20 +264,23 @@ function findChromeExecutable(configuredPath?: string): string {
         </html>
       `
 
-      await page.setContent(htmlContent, { waitUntil: 'networkidle0' })
-        const outputPath = join(TEMP_DIR, `perfect-${Date.now()}.png`)
-        const container = await page.$('.container')
-        if (container) {
-          await container.screenshot({ path: outputPath, type: 'png', omitBackground: true })
-        } else {
-          await page.screenshot({ path: outputPath, fullPage: true, type: 'png' })
-        }
-        return outputPath
-      } finally {
-        await page.close()
-      }
+          await page.setContent(htmlContent, { waitUntil: 'networkidle0' })
+          const outputPath = join(TEMP_DIR, `perfect-${Date.now()}.png`)
+          const container = await page.$('.container')
+          if (container) {
+            await container.screenshot({ path: outputPath, type: 'png', omitBackground: true })
+          } else {
+            await page.screenshot({ path: outputPath, fullPage: true, type: 'png' })
+          }
+          return outputPath
+        },
+        {
+          label: `${PLUGIN_NAME} image render`,
+          timeoutMs: 35_000,
+          viewport: { width: 1000, height: 1200, deviceScaleFactor: 2 },
+        },
+      )
     }
-
 
     const config = loadConfig()
 
@@ -338,62 +293,68 @@ function findChromeExecutable(configuredPath?: string): string {
         const query = text.replace('#完美', '').trim()
         if (!query) return e.reply('请输入要查询的完美世界玩家名称')
 
-        let imgPath: string | null = null
-        try {
-          if (!config.token || !config.mySteamId) {
-            return e.reply('完美查询 Token 或 SteamID 未配置，请在 WebUI 面板中配置后再试。')
-          }
+        await runWithReaction(e, async () => {
+          let imgPath: string | null = null
+          try {
+            if (!config.token || !config.mySteamId) {
+              return e.reply('完美查询 Token 或 SteamID 未配置，请在 WebUI 面板中配置后再试。')
+            }
 
-          ctx.logger.info(`[完美查询] 正在搜索玩家: ${query}`)
-          const playerInfo = await getPlayerInfo(query, config)
-          
-          ctx.logger.info(`[完美查询] 正在获取生涯数据 and 比赛记录: ${playerInfo.steamId}`)
-          
-          const statsUrl = 'https://api.wmpvp.com/api/csgo/home/pvp/detailStats'
-          const matchUrl = 'https://api.wmpvp.com/api/csgo/home/match/list'
-          
-          const [statsRes, matchRes] = await Promise.all([
-            fetchPerfectAPI(statsUrl, {
-              mySteamId: config.mySteamId,
-              toSteamId: playerInfo.steamId
-            }, config),
-            fetchPerfectAPI(matchUrl, {
-              mySteamId: config.mySteamId,
-              toSteamId: playerInfo.steamId,
-              page: 1,
-              pageSize: 5,
-              dataSource: 3,
-              pvpType: -1,
-              csgoSeasonId: ""
-            }, config)
-          ])
-          
-          if (statsRes.statusCode !== 0) throw new Error(statsRes.errorMessage || '获取生涯数据失败')
-          if (matchRes.statusCode !== 0) throw new Error(matchRes.errorMessage || '获取比赛记录失败')
+            ctx.logger.info(`[完美查询] 正在搜索玩家: ${query}`)
+            const playerInfo = await getPlayerInfo(query, config)
 
-          imgPath = await generatePerfectImage(playerInfo, statsRes.data, matchRes.data.matchList || [], config)
-          await e.reply(ctx.segment.image(`file://${imgPath}`))
-        } catch (err) {
-          ctx.logger.error(`[完美查询] 查询失败: ${err}`)
-          await e.reply(`查询失败: ${err instanceof Error ? err.message : String(err)}`)
-        } finally {
-          if (imgPath) {
-            const fileToDelete = imgPath
-            const timer = setTimeout(() => {
-              try {
-                if (existsSync(fileToDelete)) unlink(fileToDelete, () => {})
-              } catch (err) {
-                ctx.logger.error(`[完美查询] 清理临时文件失败: ${err}`)
-              }
-            }, 15000)
-            ctx.clears.add(() => clearTimeout(timer))
+            ctx.logger.info(`[完美查询] 正在获取生涯数据 and 比赛记录: ${playerInfo.steamId}`)
+
+            const statsUrl = 'https://api.wmpvp.com/api/csgo/home/pvp/detailStats'
+            const matchUrl = 'https://api.wmpvp.com/api/csgo/home/match/list'
+
+            const [statsRes, matchRes] = await Promise.all([
+              fetchPerfectAPI(
+                statsUrl,
+                {
+                  mySteamId: config.mySteamId,
+                  toSteamId: playerInfo.steamId,
+                },
+                config,
+              ),
+              fetchPerfectAPI(
+                matchUrl,
+                {
+                  mySteamId: config.mySteamId,
+                  toSteamId: playerInfo.steamId,
+                  page: 1,
+                  pageSize: 5,
+                  dataSource: 3,
+                  pvpType: -1,
+                  csgoSeasonId: '',
+                },
+                config,
+              ),
+            ])
+
+            if (statsRes.statusCode !== 0) throw new Error(statsRes.errorMessage || '获取生涯数据失败')
+            if (matchRes.statusCode !== 0) throw new Error(matchRes.errorMessage || '获取比赛记录失败')
+
+            imgPath = await generatePerfectImage(playerInfo, statsRes.data, matchRes.data.matchList || [], config)
+            await e.reply(ctx.segment.image(`file://${imgPath}`))
+          } catch (err) {
+            ctx.logger.error(`[完美查询] 查询失败: ${err}`)
+            await e.reply(`查询失败: ${err instanceof Error ? err.message : String(err)}`)
+          } finally {
+            if (imgPath) {
+              const fileToDelete = imgPath
+              const timer = setTimeout(() => {
+                try {
+                  if (existsSync(fileToDelete)) unlink(fileToDelete, () => {})
+                } catch (err) {
+                  ctx.logger.error(`[完美查询] 清理临时文件失败: ${err}`)
+                }
+              }, 15000)
+              ctx.clears.add(() => clearTimeout(timer))
+            }
           }
-        }
+        })
       }
     })
-
-    return () => {
-      closeBrowserInstance()
-    }
-  }
+  },
 })

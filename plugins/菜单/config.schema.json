@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "菜单 插件配置",
-  "description": "自定义指令菜单展示，支持 Eva-02、Hatsune、Cyberpunk 风格的高清图片渲染",
+  "description": "自定义指令菜单展示，使用简洁美观的 Material 3 风格高清图片渲染",
   "type": "object",
   "properties": {
     "enabled": {
@@ -25,16 +25,16 @@
     "subtitle": {
       "title": "菜单副标题",
       "type": "string",
-      "default": "EVA UNIT-02 EDITION",
+      "default": "清晰有序的指令菜单",
       "description": "大标题下方的补充说明或版本描述"
     },
     "theme": {
       "title": "菜单视觉主题",
       "type": "string",
-      "default": "eva-02",
+      "default": "material-light",
       "description": "菜单的配色主题样式",
-      "enum": ["eva-02", "hatsune", "cyberpunk"],
-      "enumNames": ["EVA 二号机橙红战术", "初音绿玻璃拟态", "赛博朋克霓虹暗黑"]
+      "enum": ["material-light", "material-warm", "material-dark"],
+      "enumNames": ["Material 3 清爽浅色", "Material 3 暖色调", "Material 3 深色"]
     },
     "whitelist": {
       "title": "白名单群组",
@@ -75,15 +75,15 @@
             "title": "排序序号",
             "type": "integer",
             "default": 10,
-            "description": "自定义选项卡排序，数字越小越靠前"
+            "description": "自定义菜单卡片排序，数字越小越靠前"
           },
           "width": {
-            "title": "选项卡宽度 (大小)",
+            "title": "卡片宽度",
             "type": "integer",
             "default": 1,
             "enum": [1, 2],
             "enumNames": ["半宽 (单栏)", "全宽 (双栏)"],
-            "description": "自定义该选项卡的尺寸。在 PC 布局下，半宽占一栏，全宽占两栏。"
+            "description": "自定义该菜单卡片的尺寸。在 PC 布局下，半宽占一栏，全宽占两栏。"
           }
         },
         "required": ["name"]

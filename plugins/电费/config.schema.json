@@ -48,12 +48,6 @@
       "default": 40,
       "description": "截图页面的内边距"
     },
-    "browserPath": {
-      "title": "Chromium 路径",
-      "type": "string",
-      "default": "/usr/bin/chromium",
-      "description": "Puppeteer 调用的 Chromium/Chrome 可执行文件路径"
-    },
     "apiBaseUrl": {
       "title": "API 请求根地址",
       "type": "string",
@@ -69,7 +63,6 @@
     "maxHistoryDays",
     "contentWidth",
     "padding",
-    "browserPath",
     "apiBaseUrl"
   ]
 }

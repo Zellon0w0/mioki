@@ -140,3 +140,7 @@ Mioki requires a running NapCat instance:
 - Import organization: node builtins → external → internal (relative)
 - Prefer type inference over explicit types where clear
 - Use `@types/node` catalog reference for consistency
+
+## Plugin Development Docs
+
+When the task involves Mioki plugin development, plugin APIs, plugin examples, or user plugin behavior, read `docs/plugin-dev.md` first and use it as the primary reference.

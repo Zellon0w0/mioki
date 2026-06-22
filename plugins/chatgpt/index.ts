@@ -1,6 +1,5 @@
 import { definePlugin, getAbsPluginDir } from 'mioki'
 import OpenAI from 'openai'
-import puppeteer, { type Browser, type Page } from 'puppeteer-core'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync, readdirSync, unlink } from 'node:fs'
@@ -8,6 +7,25 @@ import MarkdownIt from 'markdown-it'
 // @ts-ignore missing types
 import mk from 'markdown-it-katex'
 import type { RecvImageElement } from 'napcat-sdk'
+import { sharedBrowser } from '../_shared/resource'
+
+async function runWithReaction<T>(event: any, task: () => Promise<T>, id = '60'): Promise<T> {
+  let reacted = false
+  if (typeof event?.addReaction === 'function') {
+    try {
+      await event.addReaction(id)
+      reacted = true
+    } catch {}
+  }
+
+  try {
+    return await task()
+  } finally {
+    if (reacted && typeof event?.delReaction === 'function') {
+      await event.delReaction(id).catch(() => {})
+    }
+  }
+}
 
 // 获取当前插件目录路径
 const __filename = fileURLToPath(import.meta.url)
@@ -50,14 +68,16 @@ const baseConfig = {
   STREAM_RESPONSE: false,
   CHUNK_TIMEOUT: 30000,
   MAX_RETRIES: 2,
-  RETRY_DELAY: 2000
-};
+  RETRY_DELAY: 2000,
+}
 
 function getImageUrlFromSegment(image: RecvImageElement): string {
-  return [image.url, image.path, image.file].find((value): value is string => {
-    if (typeof value !== 'string' || !value.trim()) return false
-    return /^(https?:\/\/|data:|base64:\/\/|file:\/\/|[a-zA-Z]:[\\/]|\/)/.test(value)
-  }) || ''
+  return (
+    [image.url, image.path, image.file].find((value): value is string => {
+      if (typeof value !== 'string' || !value.trim()) return false
+      return /^(https?:\/\/|data:|base64:\/\/|file:\/\/|[a-zA-Z]:[\\/]|\/)/.test(value)
+    }) || ''
+  )
 }
 
 function normalizeMimeType(contentType: string | null, imageUrl: string): string {
@@ -147,7 +167,7 @@ function buildPromptText(content: string, quotedText: string, images: PromptImag
   }
 
   if (images.length > 0) {
-    parts.push(`图片上下文：\n${images.map(image => `- ${image.label}`).join('\n')}`)
+    parts.push(`图片上下文：\n${images.map((image) => `- ${image.label}`).join('\n')}`)
   }
 
   if (parts.length === 0 && images.length > 0) {
@@ -183,157 +203,51 @@ async function buildOpenAIMessageContent(text: string, images: PromptImage[]): P
 
 function isVisionUnsupportedError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : JSON.stringify(error)
-  return /image_url|image input|vision|multimodal|multi-modal|unsupported.*image|image.*unsupported|content.*array|expected.*string|invalid.*content/i.test(message || '')
+  return /image_url|image input|vision|multimodal|multi-modal|unsupported.*image|image.*unsupported|content.*array|expected.*string|invalid.*content/i.test(
+    message || '',
+  )
 }
 // 默认配置
 const defaultConfig: PluginConfig = {
   enabled: true,
   currentModel: 'deepseek-chat',
   currentApi: 'deepseek',
-  models: [
-    'deepseek-chat',
-    'gpt-4o',
-    'gpt-4o-mini',
-    'claude-3-5-sonnet',
-    'gemini-2.5-flash'
-  ],
+  models: ['deepseek-chat', 'gpt-4o', 'gpt-4o-mini', 'claude-3-5-sonnet', 'gemini-2.5-flash'],
   apis: [
     {
       name: 'deepseek',
       url: 'https://api.deepseek.com/v1',
-      apiKey: 'sk-your-deepseek-key'
+      apiKey: 'sk-your-deepseek-key',
     },
     {
       name: 'openai',
       url: 'https://api.openai.com/v1',
-      apiKey: 'sk-your-openai-key'
+      apiKey: 'sk-your-openai-key',
     },
     {
       name: 'maoleio',
       url: 'https://api.maoleio.com/v1',
-      apiKey: 'sk-your-maoleio-key'
-    }
+      apiKey: 'sk-your-maoleio-key',
+    },
   ],
-  groupWhitelist: []
-};
-
-// 全局浏览器实例
-let globalBrowser: Browser | null = null;
-let browserLaunchPromise: Promise<Browser> | null = null;
+  groupWhitelist: [],
+}
 
 // 初始化 Markdown 解析器
-const md = new MarkdownIt();
-md.use(mk);
+const md = new MarkdownIt()
+md.use(mk)
 
-function getChromeCandidates(): string[] {
-  const localAppData = process.env.LOCALAPPDATA
-  const programFiles = process.env.PROGRAMFILES
-  const programFilesX86 = process.env['PROGRAMFILES(X86)']
-
-  return [
-    process.env.PUPPETEER_EXECUTABLE_PATH,
-    process.env.CHROME_PATH,
-    '/usr/bin/chromium',
-    '/usr/bin/chromium-browser',
-    '/usr/bin/google-chrome',
-    '/usr/bin/google-chrome-stable',
-    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-    programFiles ? join(programFiles, 'Google/Chrome/Application/chrome.exe') : '',
-    programFilesX86 ? join(programFilesX86, 'Google/Chrome/Application/chrome.exe') : '',
-    localAppData ? join(localAppData, 'Google/Chrome/Application/chrome.exe') : '',
-  ].filter((candidate): candidate is string => Boolean(candidate))
-}
-
-function findChromeExecutable(): string {
-  const executablePath = getChromeCandidates().find((candidate) => existsSync(candidate))
-  if (!executablePath) {
-    throw new Error('未找到 Chrome/Chromium，请设置 PUPPETEER_EXECUTABLE_PATH 或 CHROME_PATH')
-  }
-  return executablePath
-}
-
-/**
- * 获取浏览器实例
- */
-async function getBrowserInstance(): Promise<Browser> {
-  if (globalBrowser && globalBrowser.connected) {
-    return globalBrowser;
-  }
-  globalBrowser = null;
-
-  if (!browserLaunchPromise) {
-    console.log('启动浏览器实例...');
-    browserLaunchPromise = puppeteer.launch({
-      executablePath: findChromeExecutable(),
-      headless: true,
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-gpu',
-        '--disable-software-rasterizer'
-      ],
-      timeout: 60000
-    }).then(b => {
-      globalBrowser = b;
-      browserLaunchPromise = null;
-      b.on('disconnected', () => {
-        if (globalBrowser === b) {
-          globalBrowser = null;
-        }
-      });
-      return b;
-    }).catch(err => {
-      browserLaunchPromise = null;
-      throw err;
-    });
-  }
-  return browserLaunchPromise;
-}
-
-/**
- * 关闭浏览器实例
- */
-async function closeBrowserInstance() {
-  if (browserLaunchPromise) {
-    console.log('等待正在启动的浏览器实例并关闭...');
-    try {
-      const b = await browserLaunchPromise;
-      const pages = await b.pages();
-      await Promise.all(pages.map((page: Page) => page.close().catch(() => {})));
-      await b.close();
-    } catch (err) {
-      console.error('关闭正在启动的浏览器时出错:', err);
-    } finally {
-      browserLaunchPromise = null;
-      globalBrowser = null;
-    }
-    return;
-  }
-  if (globalBrowser) {
-    console.log('关闭浏览器实例...');
-    try {
-      const pages = await globalBrowser.pages();
-      await Promise.all(pages.map((page: Page) => page.close().catch(() => {})));
-      await globalBrowser.close();
-    } catch (err) {
-      console.error('关闭浏览器时出错:', err);
-    } finally {
-      globalBrowser = null;
-    }
-  }
-}
 function cleanupTempFolder() {
-  const tempDir = join(__dirname, 'temp');
+  const tempDir = join(__dirname, 'temp')
   if (existsSync(tempDir)) {
-    console.log('清理临时文件夹...');
-    readdirSync(tempDir).forEach(file => {
+    console.log('清理临时文件夹...')
+    readdirSync(tempDir).forEach((file) => {
       try {
-        unlinkSync(join(tempDir, file));
+        unlinkSync(join(tempDir, file))
       } catch (err) {
-        console.error(`删除临时文件失败 ${file}:`, err);
+        console.error(`删除临时文件失败 ${file}:`, err)
       }
-    });
+    })
   }
 }
 
@@ -341,14 +255,13 @@ function cleanupTempFolder() {
  * 渲染Markdown为图片
  */
 async function renderMarkdownToImage(markdown: string): Promise<string> {
-  console.log('渲染Markdown，长度:', markdown.length);
-  let page: Page | null = null;
-  
+  console.log('渲染Markdown，长度:', markdown.length)
+
   try {
-    const renderedMarkdown = md.render(markdown);
-    const contentWidth = 600;
-    const padding = 35;
-    const totalWidth = contentWidth + padding * 2;
+    const renderedMarkdown = md.render(markdown)
+    const contentWidth = 600
+    const padding = 35
+    const totalWidth = contentWidth + padding * 2
 
     const html = `
       <!DOCTYPE html>
@@ -411,62 +324,59 @@ async function renderMarkdownToImage(markdown: string): Promise<string> {
         <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/contrib/auto-render.min.js"></script>
       </body>
       </html>
-    `;
+    `
 
-    const browser = await getBrowserInstance();
-    page = await browser.newPage();
+    return await sharedBrowser.withPage(
+      async (page) => {
+        await page.setViewport({
+          width: totalWidth,
+          height: 100,
+          deviceScaleFactor: 2,
+        })
 
-    await page.setViewport({
-      width: totalWidth,
-      height: 100,
-      deviceScaleFactor: 2,
-    });
+        console.log('加载HTML内容...')
+        await page.setContent(html, {
+          waitUntil: 'networkidle0',
+          timeout: baseConfig.OPENAI_TIMEOUT,
+        })
 
-    console.log('加载HTML内容...');
-    await page.setContent(html, {
-      waitUntil: 'networkidle0',
-      timeout: baseConfig.OPENAI_TIMEOUT
+        console.log('等待渲染...')
+        await new Promise((resolve) => setTimeout(resolve, baseConfig.RENDER_WAIT_TIME))
 
-    });
+        const height = await page.evaluate(() => {
+          return Math.max(
+            document.body.scrollHeight,
+            document.body.offsetHeight,
+            document.documentElement.clientHeight,
+            document.documentElement.scrollHeight,
+            document.documentElement.offsetHeight,
+          )
+        })
 
-    console.log('等待渲染...');
-    await new Promise(resolve => setTimeout(resolve, baseConfig.RENDER_WAIT_TIME));
+        console.log('内容高度:', height)
+        await page.setViewport({
+          width: totalWidth,
+          height: Math.ceil(height),
+          deviceScaleFactor: 2,
+        })
 
-    const height = await page.evaluate(() => {
-      return Math.max(
-        document.body.scrollHeight,
-        document.body.offsetHeight,
-        document.documentElement.clientHeight,
-        document.documentElement.scrollHeight,
-        document.documentElement.offsetHeight
-      );
-    });
-
-    console.log('内容高度:', height);
-    await page.setViewport({
-      width: totalWidth,
-      height: Math.ceil(height),
-      deviceScaleFactor: 2,
-    });
-
-    const tempDir = join(__dirname, 'temp');
-    if (!existsSync(tempDir)) {
-      mkdirSync(tempDir, { recursive: true });
-    }
-    const imagePath = join(tempDir, `${Date.now()}.png`);
-    await page.screenshot({ path: imagePath, type: 'png', fullPage: true, captureBeyondViewport: true });
-    return imagePath;
+        const tempDir = join(__dirname, 'temp')
+        if (!existsSync(tempDir)) {
+          mkdirSync(tempDir, { recursive: true })
+        }
+        const imagePath = join(tempDir, `${Date.now()}.png`)
+        await page.screenshot({ path: imagePath, type: 'png', fullPage: true, captureBeyondViewport: true })
+        return imagePath
+      },
+      {
+        label: 'chatgpt markdown render',
+        timeoutMs: Math.max(35_000, baseConfig.OPENAI_TIMEOUT + baseConfig.RENDER_WAIT_TIME + 5_000),
+        viewport: { width: totalWidth, height: 100, deviceScaleFactor: 2 },
+      },
+    )
   } catch (error) {
-    console.error('渲染Markdown出错:', error);
-    throw error;
-  } finally {
-    if (page) {
-      try {
-        await page.close();
-      } catch (err) {
-        console.error('关闭页面出错:', err);
-      }
-    }
+    console.error('渲染Markdown出错:', error)
+    throw error
   }
 }
 
@@ -517,7 +427,7 @@ export default definePlugin({
 
     // 获取当前API配置
     function getCurrentApiConfig() {
-      const apiConfig = pluginConfig.apis.find(a => a.name === pluginConfig.currentApi)
+      const apiConfig = pluginConfig.apis.find((a) => a.name === pluginConfig.currentApi)
       if (!apiConfig) {
         ctx.logger.warn(`[-] API配置不存在: ${pluginConfig.currentApi}`)
         return pluginConfig.apis[0] || defaultConfig.apis[0]
@@ -530,48 +440,48 @@ export default definePlugin({
       let response: Response
       try {
         if (init?.method === 'POST' && init.body) {
-          const body = JSON.parse(init.body.toString());
-          body.stream = false; // 强制禁用流式
-          
+          const body = JSON.parse(init.body.toString())
+          body.stream = false // 强制禁用流式
+
           // 兼容maoleio API：如果使用maoleio API，可能需要调整请求格式
           if (pluginConfig.currentApi === 'maoleio') {
             // maoleio兼容OpenAI Completions API，但可能需要调整模型名称
             if (body.model && body.model.startsWith('gpt-')) {
               // maoleio可能使用不同的模型命名约定
             }
-            
+
             // 添加调试日志
             console.log('使用maoleio API，请求体:', JSON.stringify(body, null, 2))
           }
-          
-          init.body = JSON.stringify(body);
+
+          init.body = JSON.stringify(body)
         }
-        
+
         // 使用全局 fetch
-        response = await fetch(url, init);
-        
+        response = await fetch(url, init)
+
         // 记录响应状态和头部信息
         console.log(`API响应状态: ${response.status} ${response.statusText}`)
-        
+
         if (pluginConfig.currentApi === 'maoleio') {
           const responseText = await response.text()
           console.log('maoleio API原始响应:', responseText)
-          
+
           // 尝试解析响应
           try {
             const parsedResponse = JSON.parse(responseText)
             console.log('maoleio API解析后响应:', JSON.stringify(parsedResponse, null, 2))
-            
+
             // 检查响应结构
             if (!parsedResponse.choices || !Array.isArray(parsedResponse.choices)) {
               console.warn('maoleio API响应缺少choices字段或格式不正确')
             }
-            
+
             // 返回一个新的Response对象，包含解析后的文本
             return new Response(responseText, {
               status: response.status,
               statusText: response.statusText,
-              headers: response.headers
+              headers: response.headers,
             })
           } catch (parseError) {
             console.error('解析maoleio API响应失败:', parseError)
@@ -579,13 +489,13 @@ export default definePlugin({
             throw new Error(`maoleio API响应格式错误: ${parseError instanceof Error ? parseError.message : '未知错误'}`)
           }
         }
-        
+
         return response
       } catch (error) {
         console.error('fetch请求失败:', error)
         throw error
       }
-    };
+    }
 
     // 创建OpenAI客户端
     function createOpenAIClient() {
@@ -594,28 +504,28 @@ export default definePlugin({
         baseURL: apiConfig.url,
         apiKey: apiConfig.apiKey,
         defaultHeaders: {
-          'Accept': 'application/json',
-          'Content-Type': 'application/json'
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
         },
-        fetch: customFetch as any
+        fetch: customFetch as any,
       })
     }
 
     let openai = createOpenAIClient()
 
     // 初始化临时文件夹
-    const tempDir = join(__dirname, 'temp');
+    const tempDir = join(__dirname, 'temp')
     if (!existsSync(tempDir)) {
-      mkdirSync(tempDir, { recursive: true });
+      mkdirSync(tempDir, { recursive: true })
     } else {
-      cleanupTempFolder();
+      cleanupTempFolder()
     }
 
     // 处理管理命令
     async function handleAdminCommand(e: any, text: string): Promise<boolean> {
       const trimmedText = text.trim()
       const parts = trimmedText.split(/\s+/)
-      
+
       if (parts[0] !== '#gpt') {
         return false
       }
@@ -652,18 +562,18 @@ export default definePlugin({
           await e.reply('请指定模型名称，例如: #gpt model gpt-4o')
           return true
         }
-        
+
         if (!pluginConfig.models.includes(modelName)) {
-          await e.reply(`模型 "${modelName}" 不存在。可用模型:\n${pluginConfig.models.map(m => `- ${m}`).join('\n')}`)
+          await e.reply(`模型 "${modelName}" 不存在。可用模型:\n${pluginConfig.models.map((m) => `- ${m}`).join('\n')}`)
           return true
         }
-        
+
         pluginConfig.currentModel = modelName
         saveConfig(pluginConfig)
         await e.reply(`已切换到模型: ${modelName}`)
         return true
       }
-      
+
       // #gpt api <api_name>
       if (cmd === 'api') {
         const apiName = parts.slice(2).join(' ').trim()
@@ -671,44 +581,44 @@ export default definePlugin({
           await e.reply('请指定API名称，例如: #gpt api deepseek')
           return true
         }
-        
-        const api = pluginConfig.apis.find(a => a.name === apiName)
+
+        const api = pluginConfig.apis.find((a) => a.name === apiName)
         if (!api) {
-          await e.reply(`API "${apiName}" 不存在。可用API:\n${pluginConfig.apis.map(a => `- ${a.name}`).join('\n')}`)
+          await e.reply(`API "${apiName}" 不存在。可用API:\n${pluginConfig.apis.map((a) => `- ${a.name}`).join('\n')}`)
           return true
         }
-        
+
         pluginConfig.currentApi = apiName
         openai = createOpenAIClient()
         saveConfig(pluginConfig)
         await e.reply(`已切换到API: ${apiName}`)
         return true
       }
-      
+
       // #gpt list <api/model>
       if (cmd === 'list') {
         const listType = parts[2]
-        
+
         if (listType === 'model' || listType === 'models') {
           const modelsList = pluginConfig.models
-            .map(m => `${m === pluginConfig.currentModel ? '→ ' : '  '}${m}`)
+            .map((m) => `${m === pluginConfig.currentModel ? '→ ' : '  '}${m}`)
             .join('\n')
           await e.reply(`可用模型 (当前: ${pluginConfig.currentModel}):\n${modelsList}`)
           return true
         }
-        
+
         if (listType === 'api' || listType === 'apis') {
           const apisList = pluginConfig.apis
-            .map(a => `${a.name === pluginConfig.currentApi ? '→ ' : '  '}${a.name}: ${a.url}`)
+            .map((a) => `${a.name === pluginConfig.currentApi ? '→ ' : '  '}${a.name}: ${a.url}`)
             .join('\n')
           await e.reply(`可用API (当前: ${pluginConfig.currentApi}):\n${apisList}`)
           return true
         }
-        
+
         await e.reply('用法: #gpt list api 或 #gpt list model')
         return true
       }
-      
+
       // #gpt add api <名称> <URL> <API密钥>
       if (cmd === 'add' && parts[2] === 'api') {
         const args = parts.slice(3)
@@ -717,7 +627,7 @@ export default definePlugin({
           return true
         }
         const [name, url, apiKey] = args
-        const existingIndex = pluginConfig.apis.findIndex(a => a.name === name)
+        const existingIndex = pluginConfig.apis.findIndex((a) => a.name === name)
         if (existingIndex !== -1) {
           pluginConfig.apis[existingIndex] = { name, url, apiKey }
           await e.reply(`已更新 API 配置 "${name}"`)
@@ -748,7 +658,7 @@ export default definePlugin({
         await e.reply(`已添加模型: ${modelName}`)
         return true
       }
-      
+
       return false
     }
 
@@ -780,179 +690,163 @@ export default definePlugin({
         const handled = await handleAdminCommand(e, text)
         if (handled) return
       }
-      
-      if (!baseConfig.DIRECT_TRIGGER.some(trigger => text.startsWith(trigger))) {
-        return;
+
+      if (!baseConfig.DIRECT_TRIGGER.some((trigger) => text.startsWith(trigger))) {
+        return
       }
 
-      const content = text.slice(1).trim();
-      const quoteMsg = await ctx.getQuoteMsg(e);
-      const quotedText = quoteMsg ? ctx.text(quoteMsg) : '';
-      const currentImages = ctx.filter(e, 'image');
-      const quoteImages = quoteMsg ? ctx.filter(quoteMsg, 'image') : [];
-      const promptImages = collectPromptImages(currentImages, quoteImages);
-      const prompt = buildPromptText(content, quotedText, promptImages);
+      const content = text.slice(1).trim()
+      const quoteMsg = await ctx.getQuoteMsg(e)
+      const quotedText = quoteMsg ? ctx.text(quoteMsg) : ''
+      const currentImages = ctx.filter(e, 'image')
+      const quoteImages = quoteMsg ? ctx.filter(quoteMsg, 'image') : []
+      const promptImages = collectPromptImages(currentImages, quoteImages)
+      const prompt = buildPromptText(content, quotedText, promptImages)
 
       if (!prompt && promptImages.length === 0) {
-        await e.reply('请引用要分析的消息或直接输入内容');
-        return;
+        await e.reply('请引用要分析的消息或直接输入内容')
+        return
       }
 
-      console.log('处理请求，长度:', prompt.length, '图片数量:', promptImages.length);
-      let thinkingMsg;
-      try {
-          thinkingMsg = await e.reply('thinking...');
-      } catch (err) {
-          console.error('发送思考消息失败:', err);
-      }
+      console.log('处理请求，长度:', prompt.length, '图片数量:', promptImages.length)
+      await runWithReaction(e, async () => {
+        try {
+          let lastError: Error | null = null
+          const userMessageContent = await buildOpenAIMessageContent(prompt, promptImages)
 
-      try {
-        let lastError: Error | null = null;
-        const userMessageContent = await buildOpenAIMessageContent(prompt, promptImages)
-        
-        for (let retry = 0; retry <= baseConfig.MAX_RETRIES; retry++) {
-          try {
-            console.log(`尝试第 ${retry + 1} 次请求...`);
-            console.log(`使用API: ${pluginConfig.currentApi}, 模型: ${pluginConfig.currentModel}`);
-            
-            // 处理maoleio API的特殊模型名称
-            let modelName = pluginConfig.currentModel
-            if (pluginConfig.currentApi === 'maoleio') {
-              // maoleio可能不支持某些模型名称，尝试调整
-              if (modelName.startsWith('gpt-')) {
-                // 可以尝试移除gpt-前缀或使用兼容名称
-                // modelName = modelName.replace('gpt-', '')
-              }
-            }
-            
-            const apiCallPromise = openai.chat.completions.create({
-              model: modelName,
-              max_tokens: 1024,
-              temperature: 0.24,
-              messages: [
-                {
-                  role: 'system',
-                  content: '你是一个专业、高效的信息检索引擎。你的文风精简，但直击要害。请使用中文回复，并尽可能使用 Markdown 语法（包括数学公式）。',
-                },
-                { role: 'user', content: userMessageContent },
-              ],
-            });
-
-            // Prevent unhandled promise rejection if Promise.race is won by the timeout
-            apiCallPromise.catch(() => {});
-
-            let timeoutId: NodeJS.Timeout | undefined;
-            const timeoutPromise = new Promise<never>((_, reject) => {
-              timeoutId = setTimeout(() => reject(new Error('请求超时')), baseConfig.OPENAI_TIMEOUT);
-            });
-
-            let response: any;
+          for (let retry = 0; retry <= baseConfig.MAX_RETRIES; retry++) {
             try {
-              response = await Promise.race([
-                apiCallPromise,
-                timeoutPromise
-              ]);
-            } finally {
-              if (timeoutId) {
-                clearTimeout(timeoutId);
+              console.log(`尝试第 ${retry + 1} 次请求...`)
+              console.log(`使用API: ${pluginConfig.currentApi}, 模型: ${pluginConfig.currentModel}`)
+
+              // 处理maoleio API的特殊模型名称
+              let modelName = pluginConfig.currentModel
+              if (pluginConfig.currentApi === 'maoleio') {
+                // maoleio可能不支持某些模型名称，尝试调整
+                if (modelName.startsWith('gpt-')) {
+                  // 可以尝试移除gpt-前缀或使用兼容名称
+                  // modelName = modelName.replace('gpt-', '')
+                }
               }
-            }
 
+              const apiCallPromise = openai.chat.completions.create({
+                model: modelName,
+                max_tokens: 1024,
+                temperature: 0.24,
+                messages: [
+                  {
+                    role: 'system',
+                    content:
+                      '你是一个专业、高效的信息检索引擎。你的文风精简，但直击要害。请使用中文回复，并尽可能使用 Markdown 语法（包括数学公式）。',
+                  },
+                  { role: 'user', content: userMessageContent },
+                ],
+              })
 
+              // Prevent unhandled promise rejection if Promise.race is won by the timeout
+              apiCallPromise.catch(() => {})
 
-            const replyContent = (response.choices?.[0]?.message?.content ?? '').trim();
-            if (!replyContent) {
-              throw new Error('AI返回了空响应');
-            }
+              let timeoutId: NodeJS.Timeout | undefined
+              const timeoutPromise = new Promise<never>((_, reject) => {
+                timeoutId = setTimeout(() => reject(new Error('请求超时')), baseConfig.OPENAI_TIMEOUT)
+              })
 
-            console.log('收到响应，长度:', replyContent.length);
-            
-            // 获取token使用信息
-            const usage = response.usage || {}
-            const promptTokens = usage.prompt_tokens || 0
-            const completionTokens = usage.completion_tokens || 0
-            const totalTokens = usage.total_tokens || 0
-            
-            // 添加模型和token信息到回复内容
-            const modelInfo = `\n\n使用模型: ${pluginConfig.currentModel} | 消耗Token: ${totalTokens} (输入:${promptTokens} 输出:${completionTokens})`
-            const finalContent = replyContent + modelInfo
-            
-            if (finalContent.length > baseConfig.MAX_RESPONSE_LENGTH) {
-              await e.reply('响应内容过长，已截断显示:\n' + finalContent.substring(0, baseConfig.MAX_RESPONSE_LENGTH));
-              return;
-            }
-
-            let imagePath: string | null = null;
-            try {
-              imagePath = await renderMarkdownToImage(finalContent);
-              await e.reply([ctx.segment.image(imagePath)], true);
-            } catch (renderError) {
-              console.error('渲染失败，回退到文本:', renderError);
-              await e.reply(finalContent);
-            } finally {
-              if (imagePath) {
-                const fileToDelete = imagePath;
-                const timer = setTimeout(() => {
-                  try {
-                    if (existsSync(fileToDelete)) {
-                      unlink(fileToDelete, () => {});
-                    }
-                  } catch {}
-                }, 15000);
-                ctx.clears.add(() => clearTimeout(timer));
+              let response: any
+              try {
+                response = await Promise.race([apiCallPromise, timeoutPromise])
+              } finally {
+                if (timeoutId) {
+                  clearTimeout(timeoutId)
+                }
               }
-            }
-            return;
-           } catch (error) {
-            lastError = error as Error;
-            console.error(`请求失败 (${retry + 1}/${baseConfig.MAX_RETRIES + 1}):`, error);
-            
-            // 如果是maoleio API，记录更详细的错误信息
-            if (pluginConfig.currentApi === 'maoleio') {
-              if (error instanceof Error) {
-                console.error('maoleio API错误详情:', {
-                  message: error.message,
-                  stack: error.stack,
-                  api: pluginConfig.currentApi,
-                  model: pluginConfig.currentModel
-                })
-              }
-            }
 
-            if (promptImages.length > 0 && isVisionUnsupportedError(error)) {
-              await e.reply(`当前模型或API不支持图片输入，请切换到支持视觉的模型/API后重试。\n当前模型: ${pluginConfig.currentModel}\n当前API: ${pluginConfig.currentApi}`);
-              return;
-            }
-            
-            if (retry < baseConfig.MAX_RETRIES) {
-              await new Promise(resolve => setTimeout(resolve, baseConfig.RETRY_DELAY));
+              const replyContent = (response.choices?.[0]?.message?.content ?? '').trim()
+              if (!replyContent) {
+                throw new Error('AI返回了空响应')
+              }
+
+              console.log('收到响应，长度:', replyContent.length)
+
+              // 获取token使用信息
+              const usage = response.usage || {}
+              const promptTokens = usage.prompt_tokens || 0
+              const completionTokens = usage.completion_tokens || 0
+              const totalTokens = usage.total_tokens || 0
+
+              // 添加模型和token信息到回复内容
+              const modelInfo = `\n\n使用模型: ${pluginConfig.currentModel} | 消耗Token: ${totalTokens} (输入:${promptTokens} 输出:${completionTokens})`
+              const finalContent = replyContent + modelInfo
+
+              if (finalContent.length > baseConfig.MAX_RESPONSE_LENGTH) {
+                await e.reply('响应内容过长，已截断显示:\n' + finalContent.substring(0, baseConfig.MAX_RESPONSE_LENGTH))
+                return
+              }
+
+              let imagePath: string | null = null
+              try {
+                imagePath = await renderMarkdownToImage(finalContent)
+                await e.reply([ctx.segment.image(imagePath)], true)
+              } catch (renderError) {
+                console.error('渲染失败，回退到文本:', renderError)
+                await e.reply(finalContent)
+              } finally {
+                if (imagePath) {
+                  const fileToDelete = imagePath
+                  const timer = setTimeout(() => {
+                    try {
+                      if (existsSync(fileToDelete)) {
+                        unlink(fileToDelete, () => {})
+                      }
+                    } catch {}
+                  }, 15000)
+                  ctx.clears.add(() => clearTimeout(timer))
+                }
+              }
+              return
+            } catch (error) {
+              lastError = error as Error
+              console.error(`请求失败 (${retry + 1}/${baseConfig.MAX_RETRIES + 1}):`, error)
+
+              // 如果是maoleio API，记录更详细的错误信息
+              if (pluginConfig.currentApi === 'maoleio') {
+                if (error instanceof Error) {
+                  console.error('maoleio API错误详情:', {
+                    message: error.message,
+                    stack: error.stack,
+                    api: pluginConfig.currentApi,
+                    model: pluginConfig.currentModel,
+                  })
+                }
+              }
+
+              if (promptImages.length > 0 && isVisionUnsupportedError(error)) {
+                await e.reply(
+                  `当前模型或API不支持图片输入，请切换到支持视觉的模型/API后重试。\n当前模型: ${pluginConfig.currentModel}\n当前API: ${pluginConfig.currentApi}`,
+                )
+                return
+              }
+
+              if (retry < baseConfig.MAX_RETRIES) {
+                await new Promise((resolve) => setTimeout(resolve, baseConfig.RETRY_DELAY))
+              }
             }
           }
-        }
 
-        throw lastError || new Error('请求失败');
-      } catch (error) {
-        console.error('最终处理失败:', error);
-        await e.reply(`处理请求时出错: ${error instanceof Error ? error.message : '未知错误'}`);
-      } finally {
-        if (thinkingMsg?.message_id) {
-          try {
-            await ctx.bot.recallMsg(thinkingMsg.message_id);
-          } catch (err) {
-            console.error('撤回消息失败:', err);
-          }
+          throw lastError || new Error('请求失败')
+        } catch (error) {
+          console.error('最终处理失败:', error)
+          await e.reply(`处理请求时出错: ${error instanceof Error ? error.message : '未知错误'}`)
         }
-      }
-    });
+      })
+    })
 
     // 进程管理
     const cleanup = async () => {
-      cleanupTempFolder();
-      await closeBrowserInstance();
-    };
+      cleanupTempFolder()
+    }
 
     return () => {
-        cleanup();
+      cleanup()
     }
-  }
-});
+  },
+})

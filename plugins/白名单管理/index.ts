@@ -28,12 +28,40 @@ export default definePlugin({
       id: '白名单管理',
       title: '黑白名单管理',
       icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>',
-      url: '/plugins/白名单管理/index.html'
+      url: '/plugins/白名单管理/index.html',
     })
 
     // 3. 注册 API 路由
     const router = express.Router()
     const authMiddleware = webui.authMiddleware
+
+    const reloadRunningPlugin = async (name: string) => {
+      const plugin = runtimePlugins.get(name)
+
+      if (!plugin) {
+        return false
+      }
+
+      await plugin.disable()
+
+      const pluginPath = path.join(getAbsPluginDir(), name)
+
+      if (!fs.existsSync(pluginPath)) {
+        throw new Error(`插件 ${name} 不存在`)
+      }
+
+      const importedPlugin = (await ctx.jiti.import(pluginPath, { default: true })) as any
+
+      if (importedPlugin.name !== name) {
+        const tip = `插件目录名称: ${name} 和插件代码中设置的 name: ${importedPlugin.name} 不一致，可能导致重载异常，请修改后重启。`
+        ctx.logger.warn(tip)
+        void ctx.noticeMainOwner(tip)
+      }
+
+      await enablePlugin(ctx.bots, importedPlugin)
+
+      return true
+    }
 
     // 智能识别辅助函数
     const isWhitelistOrBlacklistField = (key: string, prop: any): boolean => {
@@ -45,14 +73,14 @@ export default definePlugin({
       const titleLower = (prop.title || '').toLowerCase()
       const descLower = (prop.description || '').toLowerCase()
 
-      const matchesKeyword = 
-        keyLower.includes('whitelist') || 
+      const matchesKeyword =
+        keyLower.includes('whitelist') ||
         keyLower.includes('blacklist') ||
-        titleLower.includes('白名单') || 
+        titleLower.includes('白名单') ||
         titleLower.includes('黑名单') ||
-        titleLower.includes('whitelist') || 
+        titleLower.includes('whitelist') ||
         titleLower.includes('blacklist') ||
-        descLower.includes('白名单') || 
+        descLower.includes('白名单') ||
         descLower.includes('黑名单') ||
         prop.format === 'group-list'
 
@@ -108,7 +136,7 @@ export default definePlugin({
                   title: prop.title || key,
                   description: prop.description || '',
                   type: isBlack ? 'blacklist' : 'whitelist',
-                  value: Array.isArray(value) ? value : []
+                  value: Array.isArray(value) ? value : [],
                 })
               }
             }
@@ -119,9 +147,9 @@ export default definePlugin({
                 const keyLower = key.toLowerCase()
                 const isBlack = keyLower.includes('blacklist') || keyLower.includes('黑名单')
                 const isWhite = keyLower.includes('whitelist') || keyLower.includes('白名单')
-                
+
                 // 检查是否全都是数字（或者为空数组）
-                const isAllNumbers = val.every(item => typeof item === 'number')
+                const isAllNumbers = val.every((item) => typeof item === 'number')
 
                 if ((isBlack || isWhite) && isAllNumbers) {
                   fields.push({
@@ -129,7 +157,7 @@ export default definePlugin({
                     title: key,
                     description: '',
                     type: isBlack ? 'blacklist' : 'whitelist',
-                    value: val
+                    value: val,
                   })
                 }
               }
@@ -139,7 +167,7 @@ export default definePlugin({
           if (fields.length > 0) {
             result.push({
               name: p.name,
-              fields
+              fields,
             })
           }
         }
@@ -161,7 +189,7 @@ export default definePlugin({
 
       try {
         const localPlugins = await findLocalPlugins()
-        const target = localPlugins.find(p => p.name === pluginName)
+        const target = localPlugins.find((p) => p.name === pluginName)
         if (!target) {
           return res.status(404).json({ error: `未找到插件 ${pluginName}` })
         }
@@ -178,26 +206,18 @@ export default definePlugin({
         }
 
         // 更新黑白名单数组，确保是数字数组
-        config[key] = value.map(val => Number(val)).filter(val => !isNaN(val))
+        config[key] = value.map((val) => Number(val)).filter((val) => !isNaN(val))
 
         fs.writeFileSync(pConfigPath, JSON.stringify(config, null, 2), 'utf-8')
         ctx.logger.info(`已更新插件 ${pluginName} 的黑白名单配置 [${key}]`)
 
-        // 触发热重载
-        const pluginEntry = runtimePlugins.get(pluginName)
-        if (pluginEntry) {
+        try {
           ctx.logger.info(`正在热重载插件: ${pluginName}`)
-          const type = pluginEntry.type
-          try {
-            await pluginEntry.disable()
-            const pluginPath = path.join(getAbsPluginDir(), pluginName)
-            const importedPlugin = (await ctx.jiti.import(pluginPath, { default: true })) as any
-            await enablePlugin(ctx.bots, importedPlugin, type)
-            ctx.logger.info(`插件 ${pluginName} 热重载成功`)
-          } catch (reloadErr: any) {
-            ctx.logger.error(`热重载插件 ${pluginName} 失败: ${reloadErr.message}`)
-            return res.status(500).json({ error: `配置已保存，但插件重载失败: ${reloadErr.message}` })
-          }
+          const reloaded = await reloadRunningPlugin(pluginName)
+          ctx.logger.info(`插件 ${pluginName} ${reloaded ? '热重载成功' : '当前未运行，已跳过热重载'}`)
+        } catch (reloadErr: any) {
+          ctx.logger.error(`热重载插件 ${pluginName} 失败: ${reloadErr.message}`)
+          return res.status(500).json({ error: `配置已保存，但插件重载失败: ${reloadErr.message}` })
         }
 
         res.json({ success: true })
@@ -213,5 +233,5 @@ export default definePlugin({
       unregisterPage?.()
       unregisterRouter?.()
     }
-  }
+  },
 })

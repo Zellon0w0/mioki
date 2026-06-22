@@ -41,7 +41,7 @@ class RateLimiter {
 
   constructor(
     private limit: number,
-    private windowMs: number
+    private windowMs: number,
   ) {}
 
   public check(ip: string): { allowed: boolean; remaining: number; resetTime: number } {
@@ -111,7 +111,9 @@ export default definePlugin({
 
     // 弱 Token 安全检测与警告
     if (token && token.length < 8) {
-      ctx.logger.warn('⚠️ [WebUI 安全警告] 您设置的访问 Token 长度少于 8 位，极易被暴力破解，强烈建议在 config.json 中修改为更长、更复杂的 Token 或使用默认生成的强 Token！')
+      ctx.logger.warn(
+        '⚠️ [WebUI 安全警告] 您设置的访问 Token 长度少于 8 位，极易被暴力破解，强烈建议在 config.json 中修改为更长、更复杂的 Token 或使用默认生成的强 Token！',
+      )
     }
 
     ctx.logger.info(`WebUI 服务将在端口 ${port} 启动`)
@@ -121,7 +123,9 @@ export default definePlugin({
       ctx.logger.info(`首次启动 WebUI，生成的随机 token 为: ${token}`)
       setTimeout(async () => {
         try {
-          await ctx.noticeMainOwner(`[Mioki WebUI] 首次启动成功！\n管理面板地址: http://localhost:${port}\n登录访问 Token 为: ${token}\n(可在 plugins/webui/config.json 中修改)`)
+          await ctx.noticeMainOwner(
+            `[Mioki WebUI] 首次启动成功！\n管理面板地址: http://localhost:${port}\n登录访问 Token 为: ${token}\n(可在 plugins/webui/config.json 中修改)`,
+          )
           ctx.logger.info('已成功向主人发送 Token 私聊通知')
         } catch (err: any) {
           ctx.logger.error(`发送 Token 私聊通知失败: ${err.message}`)
@@ -143,13 +147,16 @@ export default definePlugin({
 
     // 初始化内存限流器
     const loginLimiter = new RateLimiter(5, 60 * 1000) // 登录限制: 1分钟5次尝试
-    const apiLimiter = new RateLimiter(100, 60 * 1000)  // 基础 API 限流: 1分钟100次尝试
+    const apiLimiter = new RateLimiter(100, 60 * 1000) // 基础 API 限流: 1分钟100次尝试
 
     // 定时清理已过期的限流记录，防止内存泄漏
-    const cleanupInterval = setInterval(() => {
-      loginLimiter.cleanup()
-      apiLimiter.cleanup()
-    }, 5 * 60 * 1000)
+    const cleanupInterval = setInterval(
+      () => {
+        loginLimiter.cleanup()
+        apiLimiter.cleanup()
+      },
+      5 * 60 * 1000,
+    )
     cleanupInterval.unref()
 
     // 基础 API 限流中间件
@@ -166,7 +173,7 @@ export default definePlugin({
         return res.status(429).json({
           error: 'Too Many Requests',
           message: '请求过于频繁，请稍后再试。',
-          retryAfter: Math.ceil((resetTime - Date.now()) / 1000)
+          retryAfter: Math.ceil((resetTime - Date.now()) / 1000),
         })
       }
       next()
@@ -186,7 +193,7 @@ export default definePlugin({
         return res.status(429).json({
           error: 'Too Many Requests',
           message: '登录尝试次数过多，已被临时锁定，请 1 分钟后重试。',
-          retryAfter: Math.ceil((resetTime - Date.now()) / 1000)
+          retryAfter: Math.ceil((resetTime - Date.now()) / 1000),
         })
       }
       next()
@@ -208,13 +215,13 @@ export default definePlugin({
       }
       const safePluginDir = getAbsPluginDir()
       const targetDir = path.resolve(safePluginDir, pluginName, 'public')
-      
+
       // 强化防路径穿越：检验绝对路径必须位于插件目录下
       if (!targetDir.startsWith(safePluginDir)) {
         ctx.logger.warn(`[WebUI 安全拦截] 检测到非法的跨目录静态资源请求, 插件名: ${pluginName}`)
         return next()
       }
-      
+
       if (fs.existsSync(targetDir)) {
         return express.static(targetDir)(req, res, next)
       }
@@ -225,7 +232,7 @@ export default definePlugin({
     const authMiddleware = (req: express.Request, res: express.Response, next: express.NextFunction) => {
       const authHeader = req.headers.authorization
       const reqToken = authHeader && authHeader.split(' ')[1]
-      
+
       // 读取最新的 token，以防在运行期间被修改
       let currentToken = token
       try {
@@ -262,12 +269,12 @@ export default definePlugin({
     }
 
     const registerPage = (page: WebUIPage) => {
-      if (!registeredPages.some(p => p.id === page.id)) {
+      if (!registeredPages.some((p) => p.id === page.id)) {
         registeredPages.push(page)
         ctx.logger.info(`WebUI 注册新页面: [${page.title}] -> ${page.url}`)
       }
       return () => {
-        const index = registeredPages.findIndex(p => p.id === page.id)
+        const index = registeredPages.findIndex((p) => p.id === page.id)
         if (index > -1) {
           registeredPages.splice(index, 1)
           ctx.logger.info(`WebUI 注销页面: [${page.title}]`)
@@ -280,8 +287,36 @@ export default definePlugin({
       authMiddleware,
       registerPage,
       registerRouter,
-      getPages: () => registeredPages
+      getPages: () => registeredPages,
     })
+
+    const reloadRunningPlugin = async (name: string) => {
+      const plugin = runtimePlugins.get(name)
+
+      if (!plugin) {
+        return false
+      }
+
+      await plugin.disable()
+
+      const pluginPath = path.join(getAbsPluginDir(), name)
+
+      if (!fs.existsSync(pluginPath)) {
+        throw new Error(`插件 ${name} 不存在`)
+      }
+
+      const importedPlugin = (await ctx.jiti.import(pluginPath, { default: true })) as any
+
+      if (importedPlugin.name !== name) {
+        const tip = `插件目录名称: ${name} 和插件代码中设置的 name: ${importedPlugin.name} 不一致，可能导致重载异常，请修改后重启。`
+        ctx.logger.warn(tip)
+        void ctx.noticeMainOwner(tip)
+      }
+
+      await enablePlugin(ctx.bots, importedPlugin)
+
+      return true
+    }
 
     // 辅助函数：根据 config 自动生成简单的 JSON Schema
     const generateSchemaFromConfig = (config: any): any => {
@@ -296,13 +331,13 @@ export default definePlugin({
         } else if (Array.isArray(val)) {
           type = 'array'
         }
-        
+
         properties[key] = {
           title: key.replace(/([A-Z])/g, ' $1').replace(/^./, (str) => str.toUpperCase()),
           type: type,
-          default: val
+          default: val,
         }
-        
+
         if (type === 'object' && val !== null) {
           properties[key] = generateSchemaFromConfig(val)
           properties[key].title = key
@@ -310,7 +345,7 @@ export default definePlugin({
       }
       return {
         type: 'object',
-        properties
+        properties,
       }
     }
 
@@ -349,7 +384,7 @@ export default definePlugin({
                 groupsMap.set(g.group_id, {
                   group_id: g.group_id,
                   group_name: g.group_name || `群 ${g.group_id}`,
-                  bot_id: bot.bot_id
+                  bot_id: bot.bot_id,
                 })
               }
             }
@@ -373,7 +408,7 @@ export default definePlugin({
           const pConfigPath = path.join(p.absPath, 'config.json')
           const pSchemaPath = path.join(p.absPath, 'config.schema.json')
 
-          let hasConfig = fs.existsSync(pConfigPath)
+          const hasConfig = fs.existsSync(pConfigPath)
           let config = null
           let schema = null
 
@@ -396,15 +431,11 @@ export default definePlugin({
             schema = generateSchemaFromConfig(config)
           }
 
-          // 检查该插件是否已启用
-          const isEnabled = runtimePlugins.has(p.name)
-
           result.push({
             name: p.name,
-            isEnabled,
             hasConfig,
             config,
-            schema
+            schema,
           })
         }
 
@@ -421,7 +452,7 @@ export default definePlugin({
 
       try {
         const localPlugins = await findLocalPlugins()
-        const targetPlugin = localPlugins.find(p => p.name === name)
+        const targetPlugin = localPlugins.find((p) => p.name === name)
 
         if (!targetPlugin) {
           return res.status(404).json({ error: `未找到插件: ${name}` })
@@ -431,21 +462,13 @@ export default definePlugin({
         fs.writeFileSync(pConfigPath, JSON.stringify(config, null, 2), 'utf-8')
         ctx.logger.info(`已更新插件 ${name} 的配置文件`)
 
-        // 热重载插件 (如果当前插件已启用)
-        const pluginEntry = runtimePlugins.get(name)
-        if (pluginEntry) {
+        try {
           ctx.logger.info(`正在热重载插件: ${name}`)
-          const type = pluginEntry.type
-          try {
-            await pluginEntry.disable()
-            const pluginPath = path.join(getAbsPluginDir(), name)
-            const importedPlugin = (await ctx.jiti.import(pluginPath, { default: true })) as any
-            await enablePlugin(ctx.bots, importedPlugin, type)
-            ctx.logger.info(`插件 ${name} 热重载成功`)
-          } catch (reloadErr: any) {
-            ctx.logger.error(`热重载插件 ${name} 失败: ${reloadErr.message}`)
-            return res.status(500).json({ error: `配置已保存，但插件重载失败: ${reloadErr.message}` })
-          }
+          const reloaded = await reloadRunningPlugin(name)
+          ctx.logger.info(`插件 ${name} ${reloaded ? '热重载成功' : '当前未运行，已跳过热重载'}`)
+        } catch (reloadErr: any) {
+          ctx.logger.error(`热重载插件 ${name} 失败: ${reloadErr.message}`)
+          return res.status(500).json({ error: `配置已保存，但插件重载失败: ${reloadErr.message}` })
         }
 
         res.json({ success: true })
@@ -487,5 +510,5 @@ export default definePlugin({
         })
       }
     }
-  }
+  },
 })

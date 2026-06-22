@@ -1,11 +1,28 @@
 import { definePlugin, getAbsPluginDir } from 'mioki'
-import puppeteer from 'puppeteer-core'
 import { existsSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { randomBytes } from 'node:crypto'
 import axios from 'axios'
-import type { Browser } from 'puppeteer-core'
+import { sharedBrowser } from '../_shared/resource'
+
+async function runWithReaction<T>(event: any, task: () => Promise<T>, id = '60'): Promise<T> {
+  let reacted = false
+  if (typeof event?.addReaction === 'function') {
+    try {
+      await event.addReaction(id)
+      reacted = true
+    } catch {}
+  }
+
+  try {
+    return await task()
+  } finally {
+    if (reacted && typeof event?.delReaction === 'function') {
+      await event.delReaction(id).catch(() => {})
+    }
+  }
+}
 
 const PLUGIN_NAME = '点歌'
 const PLUGIN_VERSION = '1.0.0'
@@ -39,78 +56,6 @@ interface SearchSession {
   timer?: NodeJS.Timeout
 }
 
-// Puppeteer browser management
-let browser: Browser | null = null
-let browserLaunchPromise: Promise<Browser> | null = null
-
-function getChromeCandidates(): string[] {
-  const localAppData = process.env.LOCALAPPDATA
-  const programFiles = process.env.PROGRAMFILES
-  const programFilesX86 = process.env['PROGRAMFILES(X86)']
-
-  return [
-    process.env.PUPPETEER_EXECUTABLE_PATH,
-    process.env.CHROME_PATH,
-    '/usr/bin/chromium',
-    '/usr/bin/chromium-browser',
-    '/usr/bin/google-chrome',
-    '/usr/bin/google-chrome-stable',
-    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-    programFiles ? join(programFiles, 'Google/Chrome/Application/chrome.exe') : '',
-    programFilesX86 ? join(programFilesX86, 'Google/Chrome/Application/chrome.exe') : '',
-    localAppData ? join(localAppData, 'Google/Chrome/Application/chrome.exe') : '',
-  ].filter((candidate): candidate is string => Boolean(candidate))
-}
-
-function findChromeExecutable(): string {
-  const executablePath = getChromeCandidates().find((candidate) => existsSync(candidate))
-  if (!executablePath) {
-    throw new Error('未找到 Chrome/Chromium，请设置 PUPPETEER_EXECUTABLE_PATH 或 CHROME_PATH')
-  }
-  return executablePath
-}
-
-async function getBrowser(): Promise<Browser> {
-  if (browser && browser.connected) {
-    return browser
-  }
-  browser = null
-
-  if (!browserLaunchPromise) {
-    browserLaunchPromise = puppeteer.launch({
-      executablePath: findChromeExecutable(),
-      headless: true,
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-gpu',
-        '--no-first-run',
-        '--no-zygote',
-        '--font-render-hinting=none',
-      ],
-      defaultViewport: {
-        width: 850,
-        height: 1000,
-        deviceScaleFactor: 2,
-      },
-    }).then(b => {
-      browser = b
-      browserLaunchPromise = null
-      b.on('disconnected', () => {
-        if (browser === b) {
-          browser = null
-        }
-      })
-      return b
-    }).catch(err => {
-      browserLaunchPromise = null
-      throw err
-    })
-  }
-  return browserLaunchPromise
-}
-
 // HTML Escaper
 function escapeHtml(str: string): string {
   if (!str) return ''
@@ -130,36 +75,56 @@ function formatDuration(duration: number): string {
   return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
 }
 
-// HTML Generator for EVA Unit-02 styling
-function renderHtml(keyword: string, platformName: string, songs: SongItem[], icons: { netease: string, qq: string, kugou: string }): string {
+// HTML Generator for Material Design 3 styling
+function renderHtml(
+  keyword: string,
+  platformName: string,
+  songs: SongItem[],
+  icons: { netease: string; qq: string; kugou: string },
+): string {
   const platform = songs[0]?.platform || 'netease'
   const platformIcon = platform === 'netease' ? icons.netease : platform === 'qq' ? icons.qq : icons.kugou
+  const safeKeyword = escapeHtml(keyword)
+  const safePlatformName = escapeHtml(platformName)
+  const platformLogoHtml = platformIcon
+    ? `<img src="${platformIcon}" width="48" height="48" alt="${safePlatformName}" />`
+    : `<span>${escapeHtml(platformName.charAt(0) || '音')}</span>`
+  const fallbackCoverUrl =
+    'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMTIiIGhlaWdodD0iMTEyIiB2aWV3Qm94PSIwIDAgMTEyIDExMiIgZmlsbD0ibm9uZSI+PHJlY3Qgd2lkdGg9IjExMiIgaGVpZ2h0PSIxMTIiIHJ4PSIxNiIgZmlsbD0iI0VBRERGRiIvPjxjaXJjbGUgY3g9IjU2IiBjeT0iNTYiIHI9IjI4IiBmaWxsPSIjNjc1MEE0IiBmaWxsLW9wYWNpdHk9Ii4xOCIvPjxwYXRoIGQ9Ik03MCAzOHYyOC42YzAgNS4yLTQuOCA5LjQtMTAuOCA5LjRTNDguNCA3MS44IDQ4LjQgNjYuNnM0LjgtOS40IDEwLjgtOS40YzEuNSAwIDIuOS4yIDQuMi43VjM4aDYuNloiIGZpbGw9IiM2NzUwQTQiLz48L3N2Zz4='
+  const safeFallbackCoverUrl = escapeHtml(fallbackCoverUrl)
 
-  const songCardsHtml = songs.map((song, idx) => {
-    const num = String(idx + 1).padStart(2, '0')
-    const name = escapeHtml(song.name)
-    const artists = escapeHtml(song.artists)
-    const duration = formatDuration(song.duration)
-    // Default placeholder cover if empty (offline-safe Base64 SVG), and enforce HTTPS to prevent mixed content blocks
-    let coverUrl = song.coverUrl || 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMDAgMTAwIiBmaWxsPSIjMmEyYjM3Ij48cmVjdCB3aWR0aD0iMTAwIiBoZWlnaHQ9IjEwMCIgcng9IjEwIi8+PHBhdGggZD0iTTUwIDMwdjMwYy0yLjIgMC00IDEuOC00IDRzMS44IDQgNCA0IDQtMS44IDQtNHYzOGgxNHYtOEg1MHoiIGZpbGw9IiNmZjNkMDAiLz48L3N2Zz4='
-    if (coverUrl.startsWith('http://')) {
-      coverUrl = coverUrl.replace('http://', 'https://')
-    }
-    
-    return `
-      <div class="song-card">
-        <div class="song-num">#${num}</div>
-        <div class="avatar-wrapper">
-          <img class="avatar" src="${coverUrl}" alt="cover" />
+  const songCardsHtml = songs
+    .map((song, idx) => {
+      const num = String(idx + 1)
+      const name = escapeHtml(song.name)
+      const artists = escapeHtml(song.artists)
+      const album = escapeHtml(song.album)
+      const duration = formatDuration(song.duration)
+      const albumHtml = album ? `<span class="song-album">${album}</span>` : ''
+      let coverUrl = song.coverUrl || fallbackCoverUrl
+      if (coverUrl.startsWith('http://')) {
+        coverUrl = coverUrl.replace('http://', 'https://')
+      }
+      const safeCoverUrl = escapeHtml(coverUrl)
+
+      return `
+      <article class="song-card">
+        <div class="song-index">${num}</div>
+        <div class="cover-frame">
+          <img class="cover" src="${safeCoverUrl}" alt="" onerror="this.onerror=null;this.src='${safeFallbackCoverUrl}'" />
         </div>
-        <div class="song-info">
+        <div class="song-copy">
           <div class="song-title">${name}</div>
-          <div class="song-singer">${artists}</div>
+          <div class="song-meta">
+            <span>${artists}</span>
+            ${albumHtml}
+          </div>
         </div>
         <div class="song-duration">${duration}</div>
-      </div>
+      </article>
     `
-  }).join('')
+    })
+    .join('')
 
   return `
     <!DOCTYPE html>
@@ -169,234 +134,307 @@ function renderHtml(keyword: string, platformName: string, songs: SongItem[], ic
       <meta name="referrer" content="no-referrer" />
       <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
+        :root {
+          color-scheme: light;
+          --md-primary: #6750a4;
+          --md-on-primary: #ffffff;
+          --md-primary-container: #eaddff;
+          --md-on-primary-container: #21005d;
+          --md-secondary-container: #e8def8;
+          --md-on-secondary-container: #1d192b;
+          --md-tertiary: #006d3b;
+          --md-tertiary-container: #9df6b9;
+          --md-background: #fffbfe;
+          --md-surface: #fffbfe;
+          --md-surface-container-lowest: #ffffff;
+          --md-surface-container-low: #f7f2fa;
+          --md-surface-container: #f3edf7;
+          --md-surface-container-high: #ece6f0;
+          --md-on-surface: #1d1b20;
+          --md-on-surface-variant: #49454f;
+          --md-outline-variant: #cac4d0;
+          --elevation-1: 0 1px 2px rgba(29, 27, 32, 0.14), 0 1px 3px 1px rgba(29, 27, 32, 0.08);
+          --elevation-2: 0 2px 6px rgba(29, 27, 32, 0.16), 0 6px 16px rgba(29, 27, 32, 0.10);
+        }
         body {
           margin: 0;
-          padding: 20px;
+          padding: 24px;
           display: flex;
           justify-content: center;
           align-items: flex-start;
           min-height: 100vh;
-          background-color: #121318;
-          background-image: 
-            linear-gradient(rgba(255, 61, 0, 0.03) 1px, transparent 1px),
-            linear-gradient(90deg, rgba(255, 61, 0, 0.03) 1px, transparent 1px);
-          background-size: 20px 20px;
-          font-family: 'Outfit', 'Noto Sans SC', sans-serif;
+          background: var(--md-background);
+          color: var(--md-on-surface);
+          font-family: 'Roboto', 'Noto Sans SC', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+          letter-spacing: 0;
         }
         .menu-wrapper {
           width: 800px;
         }
         .menu-container {
-          border: 2px solid #ff3d00;
+          border: 1px solid var(--md-outline-variant);
+          border-radius: 8px;
           padding: 24px;
-          background: radial-gradient(circle at top right, rgba(255, 61, 0, 0.05) 0%, transparent 70%);
-          position: relative;
-          overflow: hidden;
+          background: var(--md-surface-container-lowest);
+          box-shadow: var(--elevation-2);
         }
-        .menu-container::before {
-          content: '';
-          position: absolute;
-          top: 0;
-          left: 0;
-          width: 100%;
-          height: 4px;
-          background: repeating-linear-gradient(-45deg, #ffb300, #ffb300 10px, #121318 10px, #121318 20px);
-        }
-        
-        /* Header styles */
-        .header-card {
-          background: rgba(26, 27, 35, 0.95);
-          border: 1px solid #ff3d00;
-          border-top: 4px solid #ff3d00;
+        .header {
+          min-height: 116px;
           padding: 20px;
+          border: 1px solid var(--md-outline-variant);
+          border-radius: 8px;
+          background: var(--md-surface-container-low);
           margin-bottom: 20px;
           display: flex;
           align-items: center;
-          position: relative;
-          clip-path: polygon(0 0, 100% 0, 100% calc(100% - 15px), calc(100% - 15px) 100%, 0 100%);
-        }
-        .header-card::after {
-          content: 'SYS STATUS: ACTIVE [EVA-02]';
-          position: absolute;
-          top: 8px;
-          right: 12px;
-          font-size: 10px;
-          color: #ffb300;
-          font-family: monospace;
-          letter-spacing: 1px;
-        }
-        .header-info h1 {
-          font-size: 24px;
-          font-weight: 800;
-          color: #ffffff;
-          margin: 0 0 4px 0;
-          letter-spacing: 2px;
-          text-transform: uppercase;
-          text-shadow: 0 0 10px rgba(229, 57, 53, 0.4);
-        }
-        .header-subtitle {
-          font-size: 12px;
-          color: #ffb300;
-          font-weight: 700;
-          letter-spacing: 1.5px;
-          text-transform: uppercase;
-          margin-bottom: 8px;
-        }
-        .header-meta {
-          font-size: 11px;
-          color: #8c8d99;
-          font-family: monospace;
-        }
-        .header-meta span {
-          color: #ff6d00;
-          font-weight: bold;
+          gap: 16px;
         }
         .platform-logo {
-          margin-left: 20px;
-          flex-shrink: 0;
-          filter: drop-shadow(0 0 6px rgba(255, 61, 0, 0.4));
+          width: 64px;
+          height: 64px;
+          border-radius: 8px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          flex: 0 0 auto;
+          background: var(--md-primary-container);
+          color: var(--md-on-primary-container);
+          font-size: 22px;
+          font-weight: 700;
+        }
+        .platform-logo img {
+          display: block;
+          width: 48px;
+          height: 48px;
+          object-fit: contain;
+          border-radius: 8px;
+        }
+        .header-copy {
+          min-width: 0;
+          flex: 1;
+        }
+        .eyebrow {
+          margin-bottom: 6px;
+          color: var(--md-primary);
+          font-size: 12px;
+          font-weight: 600;
+          line-height: 16px;
+        }
+        .header h1 {
+          margin-bottom: 8px;
+          color: var(--md-on-surface);
+          font-size: 28px;
+          font-weight: 500;
+          line-height: 36px;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+        .header-meta {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          color: var(--md-on-surface-variant);
+          font-size: 14px;
+          line-height: 20px;
+          min-width: 0;
+        }
+        .header-meta strong {
+          color: var(--md-on-surface);
+          font-weight: 500;
+          max-width: 330px;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        .meta-dot {
+          width: 4px;
+          height: 4px;
+          border-radius: 999px;
+          background: var(--md-outline-variant);
+          flex: 0 0 auto;
+        }
+        .count-chip {
+          min-width: 88px;
+          min-height: 64px;
+          border: 1px solid var(--md-outline-variant);
+          border-radius: 8px;
+          display: flex;
+          flex-direction: column;
+          justify-content: center;
+          align-items: center;
+          background: var(--md-surface-container-lowest);
+          color: var(--md-on-surface-variant);
+          flex: 0 0 auto;
+          box-shadow: var(--elevation-1);
+        }
+        .count-chip strong {
+          color: var(--md-primary);
+          font-size: 24px;
+          font-weight: 600;
+          line-height: 28px;
+        }
+        .count-chip span {
+          font-size: 12px;
+          line-height: 16px;
         }
  
-        /* Song card list */
         .songs-list {
           display: flex;
           flex-direction: column;
-          gap: 12px;
+          gap: 10px;
         }
         .song-card {
-          background: rgba(26, 27, 35, 0.85);
-          border: 1px solid rgba(255, 61, 0, 0.2);
-          border-left: 4px solid #ff3d00;
-          padding: 12px 20px;
+          min-height: 78px;
+          padding: 10px 14px;
+          border: 1px solid var(--md-outline-variant);
+          border-radius: 8px;
+          display: grid;
+          grid-template-columns: 36px 56px minmax(0, 1fr) auto;
+          align-items: center;
+          gap: 12px;
+          background: var(--md-surface);
+        }
+        .song-card:first-child {
+          background: var(--md-secondary-container);
+          border-color: rgba(103, 80, 164, 0.28);
+        }
+        .song-index {
+          width: 32px;
+          height: 32px;
+          border-radius: 8px;
           display: flex;
           align-items: center;
-          clip-path: polygon(0 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%);
+          justify-content: center;
+          background: var(--md-surface-container);
+          color: var(--md-primary);
+          font-size: 14px;
+          font-weight: 700;
+          line-height: 20px;
         }
-        .song-num {
-          font-size: 20px;
-          font-weight: 800;
-          color: #ffb300;
-          font-family: monospace;
-          width: 40px;
-          text-shadow: 0 0 5px rgba(255, 179, 0, 0.3);
+        .song-card:first-child .song-index {
+          background: var(--md-primary);
+          color: var(--md-on-primary);
         }
-        .avatar-wrapper {
-          width: 50px;
-          height: 50px;
-          border: 1px solid #ff3d00;
-          padding: 2px;
-          background: #121318;
-          clip-path: polygon(15% 0%, 85% 0%, 100% 15%, 100% 85%, 85% 100%, 15% 100%, 0% 85%, 0% 15%);
-          margin-right: 20px;
+        .cover-frame {
+          width: 56px;
+          height: 56px;
+          border-radius: 8px;
+          overflow: hidden;
+          background: var(--md-surface-container-high);
+          flex: 0 0 auto;
         }
-        .avatar {
+        .cover {
           width: 100%;
           height: 100%;
           object-fit: cover;
-          clip-path: polygon(15% 0%, 85% 0%, 100% 15%, 100% 85%, 85% 100%, 15% 100%, 0% 85%, 0% 15%);
         }
-        .song-info {
-          flex: 1;
+        .song-copy {
+          min-width: 0;
           display: flex;
           flex-direction: column;
           gap: 4px;
         }
         .song-title {
           font-size: 16px;
-          font-weight: 700;
-          color: #ffffff;
+          font-weight: 600;
+          line-height: 24px;
+          color: var(--md-on-surface);
           white-space: nowrap;
           overflow: hidden;
           text-overflow: ellipsis;
-          max-width: 450px;
         }
-        .song-singer {
+        .song-meta {
+          min-width: 0;
+          display: flex;
+          align-items: center;
+          gap: 8px;
           font-size: 13px;
-          color: #ff6d00;
+          line-height: 18px;
+          color: var(--md-on-surface-variant);
           white-space: nowrap;
           overflow: hidden;
           text-overflow: ellipsis;
-          max-width: 450px;
+        }
+        .song-meta span {
+          min-width: 0;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+        .song-album {
+          padding-left: 8px;
+          border-left: 1px solid var(--md-outline-variant);
         }
         .song-duration {
+          min-width: 58px;
+          min-height: 32px;
+          border-radius: 8px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          background: var(--md-surface-container-low);
+          color: var(--md-on-surface-variant);
+          font-family: 'Roboto Mono', Consolas, monospace;
           font-size: 14px;
-          font-weight: bold;
-          color: #8c8d99;
-          font-family: monospace;
-          margin-left: 20px;
+          font-weight: 500;
+          line-height: 20px;
         }
  
-        /* Footer */
-        .footer-card {
+        .footer {
+          min-height: 48px;
+          margin-top: 18px;
+          padding: 12px 4px 0;
+          border-top: 1px solid var(--md-outline-variant);
           display: flex;
           justify-content: space-between;
           align-items: center;
-          padding: 12px 20px;
-          background: rgba(26, 27, 35, 0.95);
-          border: 1px solid #ff3d00;
-          margin-top: 20px;
-          font-size: 10px;
-          font-family: monospace;
-          color: #8c8d99;
-          clip-path: polygon(0 10px, 10px 0, 100% 0, 100% 100%, 0 100%);
+          gap: 12px;
+          color: var(--md-on-surface-variant);
+          font-size: 13px;
+          line-height: 18px;
         }
-        .footer-side strong {
-          color: #ffb300;
+        .footer strong {
+          color: var(--md-tertiary);
+          font-weight: 600;
         }
       </style>
-      <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=Noto+Sans+SC:wght@400;500;700;900&display=swap" rel="stylesheet">
     </head>
     <body>
       <div class="menu-wrapper">
         <div class="menu-container">
-          <div class="header-card">
-            <div class="header-info" style="flex: 1;">
-              <div class="header-subtitle">MUSIC SELECTION</div>
+          <header class="header">
+            <div class="platform-logo">
+              ${platformLogoHtml}
+            </div>
+            <div class="header-copy">
+              <div class="eyebrow">Mioki Music</div>
               <h1>点歌搜索结果</h1>
               <div class="header-meta">
-                SEARCH KEYWORD: <span>${escapeHtml(keyword)}</span> // PLATFORM: <span>${escapeHtml(platformName)}</span>
+                <span>搜索</span>
+                <strong>${safeKeyword}</strong>
+                <span class="meta-dot"></span>
+                <span>${safePlatformName}</span>
               </div>
             </div>
-            <div class="platform-logo">
-              <img src="${platformIcon}" width="40" height="40" style="display:block; object-fit:contain; border-radius:50%;" />
+            <div class="count-chip">
+              <strong>${songs.length}</strong>
+              <span>首歌曲</span>
             </div>
-          </div>
+          </header>
  
           <div class="songs-list">
             ${songCardsHtml}
           </div>
  
-          <div class="footer-card">
-            <div class="footer-side">
-              SYSTEM: <strong>MIOKI</strong>
-            </div>
-            <div class="footer-side">
-              <strong>EVANGELION</strong>
-            </div>
-          </div>
+          <footer class="footer">
+            <span>发送 <strong>选择 序号</strong> 完成点歌</span>
+            <span>会话 3 分钟内有效</span>
+          </footer>
         </div>
       </div>
     </body>
     </html>
   `
-}
-
-function promiseWithTimeout<T>(promise: Promise<T>, timeoutMs: number, errorMsg: string): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      reject(new Error(errorMsg))
-    }, timeoutMs)
-    promise.then(
-      (res) => {
-        clearTimeout(timer)
-        resolve(res)
-      },
-      (err) => {
-        clearTimeout(timer)
-        reject(err)
-      }
-    )
-  })
 }
 
 async function fetchWithTimeout(url: string, options: any = {}, timeoutMs = 8000): Promise<Response> {
@@ -405,7 +443,7 @@ async function fetchWithTimeout(url: string, options: any = {}, timeoutMs = 8000
   try {
     return await fetch(url, {
       ...options,
-      signal: controller.signal
+      signal: controller.signal,
     })
   } finally {
     clearTimeout(id)
@@ -413,45 +451,40 @@ async function fetchWithTimeout(url: string, options: any = {}, timeoutMs = 8000
 }
 
 async function renderSongsImage(keyword: string, platformName: string, songs: SongItem[]): Promise<Buffer | null> {
-  const internalRender = async () => {
-    let page;
-    try {
-      const pluginDir = join(getAbsPluginDir(), '点歌')
-      const publicDir = join(pluginDir, 'public')
-      const getIconBase64 = (filename: string): string => {
-        const filePath = join(publicDir, filename)
-        if (existsSync(filePath)) {
-          return `data:image/png;base64,${readFileSync(filePath).toString('base64')}`
-        }
-        return ''
-      }
-
-      const icons = {
-        netease: getIconBase64('Netease_Music_Icon.png'),
-        qq: getIconBase64('QQ_Music_Icon.png'),
-        kugou: getIconBase64('Kugou_Icon.png')
-      }
-
-      const instance = await getBrowser()
-      page = await instance.newPage()
-      await page.setViewport({ width: 850, height: 1000, deviceScaleFactor: 2 })
-      const html = renderHtml(keyword, platformName, songs, icons)
-      await page.setContent(html, { waitUntil: 'load', timeout: 8000 })
-      const target = await page.$('.menu-container')
-      const image = await (target || page).screenshot({
-        type: 'png',
-        encoding: 'binary',
-      })
-      return Buffer.from(image)
-    } finally {
-      if (page) {
-        await page.close().catch(() => {})
-      }
-    }
-  }
-
   try {
-    return await promiseWithTimeout(internalRender(), 12000, 'Image rendering timed out')
+    const pluginDir = join(getAbsPluginDir(), '点歌')
+    const publicDir = join(pluginDir, 'public')
+    const getIconBase64 = (filename: string): string => {
+      const filePath = join(publicDir, filename)
+      if (existsSync(filePath)) {
+        return `data:image/png;base64,${readFileSync(filePath).toString('base64')}`
+      }
+      return ''
+    }
+
+    const icons = {
+      netease: getIconBase64('Netease_Music_Icon.png'),
+      qq: getIconBase64('QQ_Music_Icon.png'),
+      kugou: getIconBase64('Kugou_Icon.png'),
+    }
+
+    return await sharedBrowser.withPage(
+      async (page) => {
+        const html = renderHtml(keyword, platformName, songs, icons)
+        await page.setContent(html, { waitUntil: 'load', timeout: 8000 })
+        const target = await page.$('.menu-container')
+        const image = await (target || page).screenshot({
+          type: 'png',
+          encoding: 'binary',
+        })
+        return Buffer.from(image)
+      },
+      {
+        label: `${PLUGIN_NAME} 搜索结果渲染`,
+        timeoutMs: 20_000,
+        viewport: { width: 850, height: 1000, deviceScaleFactor: 2 },
+      },
+    )
   } catch (err) {
     console.error('[点歌] Image render error:', err)
     return null
@@ -463,9 +496,9 @@ async function downloadAudioToTemp(url: string, headers: Record<string, string>)
   const response = await axios.get(url, {
     headers,
     responseType: 'arraybuffer',
-    timeout: 30000
+    timeout: 30000,
   })
-  
+
   const tempFile = join(tmpdir(), `mioki-music-${randomBytes(8).toString('hex')}.mp3`)
   writeFileSync(tempFile, Buffer.from(response.data))
   return tempFile
@@ -492,7 +525,7 @@ export default definePlugin({
         kugouCookie: '',
         useImageRender: true,
         sessionTimeoutMs: 180000,
-        whitelist: []
+        whitelist: [],
       }
 
       if (!existsSync(configPath)) {
@@ -503,7 +536,7 @@ export default definePlugin({
         const fileContent = readFileSync(configPath, 'utf-8')
         return {
           ...defaultConfig,
-          ...JSON.parse(fileContent)
+          ...JSON.parse(fileContent),
         }
       } catch (err: any) {
         ctx.logger.error(`加载配置文件失败，回退到默认设置: ${err.message}`)
@@ -517,14 +550,16 @@ export default definePlugin({
     const platformNames: Record<string, string> = {
       netease: '网易云音乐',
       qq: 'QQ音乐',
-      kugou: '酷狗音乐'
+      kugou: '酷狗音乐',
     }
 
     // Direct search helper
     async function searchMusic(platform: string, keyword: string, config: PluginConfig): Promise<SongItem[]> {
       if (platform === 'netease') {
         // Step 1: Search to get brief song list & IDs
-        const searchRes = await fetchWithTimeout(`http://music.163.com/api/search/get/web?s=${encodeURIComponent(keyword)}&type=1&offset=0&limit=10`)
+        const searchRes = await fetchWithTimeout(
+          `http://music.163.com/api/search/get/web?s=${encodeURIComponent(keyword)}&type=1&offset=0&limit=10`,
+        )
         const searchData = await searchRes.json()
         const briefSongs = searchData?.result?.songs || []
         if (briefSongs.length === 0) return []
@@ -542,7 +577,7 @@ export default definePlugin({
           album: song.album?.name || '',
           duration: song.duration ? Math.round(song.duration / 1000) : 0,
           coverUrl: song.album?.picUrl || '',
-          platform: 'netease'
+          platform: 'netease',
         }))
       } else if (platform === 'qq') {
         let uin = '0'
@@ -564,7 +599,7 @@ export default definePlugin({
             inCharset: 'utf-8',
             outCharset: 'utf-8',
             notice: 0,
-            needNewCode: 0
+            needNewCode: 0,
           },
           req_0: {
             method: 'DoSearchForQQMusicDesktop',
@@ -573,17 +608,21 @@ export default definePlugin({
               num_per_page: 10,
               page_num: 1,
               query: keyword,
-              search_type: 0
-            }
-          }
+              search_type: 0,
+            },
+          },
         }
-        const res = await fetchWithTimeout(`https://u.y.qq.com/cgi-bin/musicu.fcg?data=${encodeURIComponent(JSON.stringify(queryData))}`, {
-          headers: {
-            'Referer': 'https://y.qq.com/',
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Cookie': config.qqCookie || ''
-          }
-        })
+        const res = await fetchWithTimeout(
+          `https://u.y.qq.com/cgi-bin/musicu.fcg?data=${encodeURIComponent(JSON.stringify(queryData))}`,
+          {
+            headers: {
+              Referer: 'https://y.qq.com/',
+              'User-Agent':
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+              Cookie: config.qqCookie || '',
+            },
+          },
+        )
         const resData = await res.json()
         const songs = resData?.req_0?.data?.body?.song?.list || []
         return songs.map((song: any) => ({
@@ -593,10 +632,12 @@ export default definePlugin({
           album: song.album?.name || '',
           duration: song.interval || 0,
           coverUrl: song.album?.mid ? `https://y.gtimg.cn/music/photo_new/T002R300x300M000${song.album.mid}.jpg` : '',
-          platform: 'qq'
+          platform: 'qq',
         }))
       } else if (platform === 'kugou') {
-        const res = await fetchWithTimeout(`http://mobilecdn.kugou.com/api/v3/search/song?keyword=${encodeURIComponent(keyword)}&page=1&pagesize=10`)
+        const res = await fetchWithTimeout(
+          `http://mobilecdn.kugou.com/api/v3/search/song?keyword=${encodeURIComponent(keyword)}&page=1&pagesize=10`,
+        )
         const resData = await res.json()
         const songs = resData?.data?.info || []
         return songs.map((song: any) => ({
@@ -606,20 +647,25 @@ export default definePlugin({
           album: song.album_name || '',
           duration: song.duration || 0,
           coverUrl: song.trans_param?.union_cover ? song.trans_param.union_cover.replace('{size}', '400') : '',
-          platform: 'kugou'
+          platform: 'kugou',
         }))
       }
       return []
     }
 
     // Direct play url resolver helper
-    async function resolvePlayUrl(platform: string, id: string, config: PluginConfig): Promise<{ url: string, headers: Record<string, string> } | null> {
+    async function resolvePlayUrl(
+      platform: string,
+      id: string,
+      config: PluginConfig,
+    ): Promise<{ url: string; headers: Record<string, string> } | null> {
       if (platform === 'netease') {
         const playUrlApi = `https://music.163.com/api/song/enhance/player/url?id=${id}&ids=[${id}]&br=128000`
         const headers = {
-          'Referer': 'https://music.163.com/',
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-          'Cookie': config.neteaseCookie || ''
+          Referer: 'https://music.163.com/',
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          Cookie: config.neteaseCookie || '',
         }
         const res = await axios.get(playUrlApi, { headers, timeout: 10000 })
         const playUrl = res.data?.data?.[0]?.url
@@ -638,21 +684,22 @@ export default definePlugin({
               songtype: [0],
               uin: '0',
               loginflag: 1,
-              platform: '20'
-            }
+              platform: '20',
+            },
           },
           comm: {
             uin: 0,
             format: 'json',
             ct: 24,
-            cv: 0
-          }
+            cv: 0,
+          },
         }
         const url = `https://u.y.qq.com/cgi-bin/musicu.fcg?data=${encodeURIComponent(JSON.stringify(queryData))}`
         const headers = {
-          'Referer': 'https://y.qq.com/',
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-          'Cookie': config.qqCookie || ''
+          Referer: 'https://y.qq.com/',
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          Cookie: config.qqCookie || '',
         }
         const res = await axios.get(url, { headers, timeout: 10000 })
         const purl = res.data?.req_0?.data?.midurlinfo?.[0]?.purl
@@ -663,8 +710,9 @@ export default definePlugin({
       } else if (platform === 'kugou') {
         const url = `https://m.kugou.com/app/i/getSongInfo.php?cmd=playInfo&hash=${id}`
         const headers = {
-          'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 13_2_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/13.0.3 Mobile/15E148 Safari/604.1',
-          'Cookie': config.kugouCookie || ''
+          'User-Agent':
+            'Mozilla/5.0 (iPhone; CPU iPhone OS 13_2_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/13.0.3 Mobile/15E148 Safari/604.1',
+          Cookie: config.kugouCookie || '',
         }
         const res = await axios.get(url, { headers, timeout: 10000 })
         const playUrl = res.data?.url
@@ -714,70 +762,83 @@ export default definePlugin({
       if (isCommand) {
         if (!keyword) {
           const defaultName = platformNames[config.defaultPlatform] || '网易云音乐'
-          await event.reply(`🎶 MIOKI 点歌系统指令菜单：\n\n👉 【默认平台点歌】（当前默认：${defaultName}）\n   点歌 歌名\n   （示例：点歌 onelastkiss）\n\n👉 【指定平台点歌】\n   网易云点歌 歌名\n   QQ点歌 歌名\n   酷狗点歌 歌名\n\n💡 提示：搜索出歌曲列表后，请在 3 分钟内发送选择指令。`, true)
+          await event.reply(
+            `🎶 MIOKI 点歌系统指令菜单：\n\n👉 【默认平台点歌】（当前默认：${defaultName}）\n   点歌 歌名\n   （示例：点歌 onelastkiss）\n\n👉 【指定平台点歌】\n   网易云点歌 歌名\n   QQ点歌 歌名\n   酷狗点歌 歌名\n\n💡 提示：搜索出歌曲列表后，请在 3 分钟内发送选择指令。`,
+            true,
+          )
           return
         }
 
         ctx.logger.info(`收到点歌请求: 平台=${platform}, 关键词=${keyword}`)
-        try {
-          const songs = await searchMusic(platform, keyword, config)
-          if (songs.length === 0) {
-            await event.reply('未搜索到相关歌曲，请换个关键词试试。', true)
-            return
-          }
-
-          // Limit to top 10 songs
-          const topSongs = songs.slice(0, 10)
-
-          // Save search results in session
-          const sessionKey = event.message_type === 'group' 
-            ? `${event.group_id}_${event.user_id}` 
-            : `${event.user_id}`
-          
-          const oldSession = sessions.get(sessionKey)
-          if (oldSession && oldSession.timer) {
-            clearTimeout(oldSession.timer)
-          }
-
-          const timer = setTimeout(() => {
-            sessions.delete(sessionKey)
-          }, config.sessionTimeoutMs)
-          ctx.clears.add(() => clearTimeout(timer))
-
-          sessions.set(sessionKey, {
-            platform,
-            keyword,
-            results: topSongs,
-            expireTime: Date.now() + config.sessionTimeoutMs,
-            timer
-          })
-
-          if (config.useImageRender) {
-            // Render via Puppeteer
-            const promptMsg = await event.reply('正在搜索歌曲，请稍候...', false)
-            const imgBuffer = await renderSongsImage(keyword, platformNames[platform] || platform, topSongs)
-            
-            // Recall prompt message once done
-            if (promptMsg && promptMsg.message_id) {
-              await ctx.bot.recallMsg(promptMsg.message_id).catch(() => {})
+        const searchAndReply = async () => {
+          try {
+            const songs = await searchMusic(platform, keyword, config)
+            if (songs.length === 0) {
+              await event.reply('未搜索到相关歌曲，请换个关键词试试。', true)
+              return
             }
 
-            if (imgBuffer) {
-              const base64Img = `base64://${imgBuffer.toString('base64')}`
-              await event.reply([ctx.segment.image(base64Img), '\n💡 请在 3 分钟内发送“选择 序号”（例如：选择 1）进行点歌'])
+            // Limit to top 10 songs
+            const topSongs = songs.slice(0, 10)
+
+            // Save search results in session
+            const sessionKey =
+              event.message_type === 'group' ? `${event.group_id}_${event.user_id}` : `${event.user_id}`
+
+            const oldSession = sessions.get(sessionKey)
+            if (oldSession && oldSession.timer) {
+              clearTimeout(oldSession.timer)
+            }
+
+            const timer = setTimeout(() => {
+              sessions.delete(sessionKey)
+            }, config.sessionTimeoutMs)
+            ctx.clears.add(() => clearTimeout(timer))
+
+            sessions.set(sessionKey, {
+              platform,
+              keyword,
+              results: topSongs,
+              expireTime: Date.now() + config.sessionTimeoutMs,
+              timer,
+            })
+
+            if (config.useImageRender) {
+              // Render via Puppeteer
+              const imgBuffer = await renderSongsImage(keyword, platformNames[platform] || platform, topSongs)
+
+              if (imgBuffer) {
+                const base64Img = `base64://${imgBuffer.toString('base64')}`
+                await event.reply([
+                  ctx.segment.image(base64Img),
+                  '\n💡 请在 3 分钟内发送“选择 序号”（例如：选择 1）进行点歌',
+                ])
+              } else {
+                // Fallback to text rendering
+                const textList = topSongs.map((s, idx) => `${idx + 1}. ${s.name} - ${s.artists}`).join('\n')
+                await event.reply(
+                  `【${platformNames[platform]}】点歌搜索结果：\n${textList}\n\n💡 请在 3 分钟内发送“选择 序号”进行点歌`,
+                  true,
+                )
+              }
             } else {
-              // Fallback to text rendering
+              // Text list rendering
               const textList = topSongs.map((s, idx) => `${idx + 1}. ${s.name} - ${s.artists}`).join('\n')
-              await event.reply(`【${platformNames[platform]}】点歌搜索结果：\n${textList}\n\n💡 请在 3 分钟内发送“选择 序号”进行点歌`, true)
+              await event.reply(
+                `【${platformNames[platform]}】点歌搜索结果：\n${textList}\n\n💡 请在 3 分钟内发送“选择 序号”进行点歌`,
+                true,
+              )
             }
-          } else {
-            // Text list rendering
-            const textList = topSongs.map((s, idx) => `${idx + 1}. ${s.name} - ${s.artists}`).join('\n')
-            await event.reply(`【${platformNames[platform]}】点歌搜索结果：\n${textList}\n\n💡 请在 3 分钟内发送“选择 序号”进行点歌`, true)
+          } catch (err: any) {
+            ctx.logger.error(`点歌搜索出错: ${err.message}`)
+            await event.reply(`搜索失败，发生错误: ${err.message}`, true)
           }
-        } catch (err: any) {
-          ctx.logger.error(`点歌搜索出错: ${err.message}`)
-          await event.reply(`搜索失败，发生错误: ${err.message}`, true)
+        }
+
+        if (event.message_type === 'group') {
+          await runWithReaction(event, searchAndReply)
+        } else {
+          await searchAndReply()
         }
       }
     })
@@ -799,9 +860,7 @@ export default definePlugin({
       const match = text.match(/^\s*选择\s*(\d+)\s*$/)
       if (!match) return
 
-      const sessionKey = event.message_type === 'group' 
-        ? `${event.group_id}_${event.user_id}` 
-        : `${event.user_id}`
+      const sessionKey = event.message_type === 'group' ? `${event.group_id}_${event.user_id}` : `${event.user_id}`
 
       const session = sessions.get(sessionKey)
       if (!session) return // User has no active song selection session, ignore
@@ -824,59 +883,53 @@ export default definePlugin({
       if (session.timer) clearTimeout(session.timer)
       sessions.delete(sessionKey) // Consume the session immediately
 
-      await event.reply(`已选择 [${selectedSong.name}]，正在解析语音，请稍候...`, false)
+      const resolveAndReply = async () => {
+        let tempFilePath: string | null = null
 
-      let tempFilePath: string | null = null
+        try {
+          const resolved = await resolvePlayUrl(selectedSong.platform, selectedSong.id, config)
+          if (!resolved || !resolved.url) {
+            await event.reply('解析音频链接失败，这可能是VIP歌曲、数字专辑或版权受限歌曲。', true)
+            return
+          }
 
-      try {
-        const resolved = await resolvePlayUrl(selectedSong.platform, selectedSong.id, config)
-        if (!resolved || !resolved.url) {
-          await event.reply('解析音频链接失败，这可能是VIP歌曲、数字专辑或版权受限歌曲。', true)
-          return
-        }
+          ctx.logger.info(`正在解析音频流: ${resolved.url}`)
+          tempFilePath = await downloadAudioToTemp(resolved.url, resolved.headers)
 
-        ctx.logger.info(`正在解析音频流: ${resolved.url}`)
-        tempFilePath = await downloadAudioToTemp(resolved.url, resolved.headers)
-        
-        ctx.logger.info(`音频文件已成功下载到临时路径: ${tempFilePath}`)
-        const recordSeg = ctx.segment.record(`file:///${tempFilePath.replace(/\\/g, '/')}`)
-        await event.reply(recordSeg)
-      } catch (err: any) {
-        ctx.logger.error(`获取/下载音乐失败: ${err.message}`)
-        await event.reply(`音频加载失败: ${err.message}`, true)
-      } finally {
-        if (tempFilePath && existsSync(tempFilePath)) {
-          // Delay deletion to give OneBot/NapCat a chance to load the file
-          const filePathToDelete = tempFilePath
-          const timer = setTimeout(() => {
-            try {
-              if (existsSync(filePathToDelete)) {
-                unlinkSync(filePathToDelete)
-                ctx.logger.debug(`成功清理临时音频文件: ${filePathToDelete}`)
+          ctx.logger.info(`音频文件已成功下载到临时路径: ${tempFilePath}`)
+          const recordSeg = ctx.segment.record(`file:///${tempFilePath.replace(/\\/g, '/')}`)
+          await event.reply(recordSeg)
+        } catch (err: any) {
+          ctx.logger.error(`获取/下载音乐失败: ${err.message}`)
+          await event.reply(`音频加载失败: ${err.message}`, true)
+        } finally {
+          if (tempFilePath && existsSync(tempFilePath)) {
+            // Delay deletion to give OneBot/NapCat a chance to load the file
+            const filePathToDelete = tempFilePath
+            const timer = setTimeout(() => {
+              try {
+                if (existsSync(filePathToDelete)) {
+                  unlinkSync(filePathToDelete)
+                  ctx.logger.debug(`成功清理临时音频文件: ${filePathToDelete}`)
+                }
+              } catch (cleanupErr: any) {
+                ctx.logger.warn(`清理临时音频文件失败: ${cleanupErr.message}`)
               }
-            } catch (cleanupErr: any) {
-              ctx.logger.warn(`清理临时音频文件失败: ${cleanupErr.message}`)
-            }
-          }, 15000)
-          ctx.clears.add(() => clearTimeout(timer))
+            }, 15000)
+            ctx.clears.add(() => clearTimeout(timer))
+          }
         }
+      }
+
+      if (event.message_type === 'group') {
+        await runWithReaction(event, resolveAndReply)
+      } else {
+        await resolveAndReply()
       }
     })
 
     return async () => {
-      if (browserLaunchPromise) {
-        try {
-          const b = await browserLaunchPromise
-          await b.close()
-        } catch {}
-        browserLaunchPromise = null
-      } else if (browser) {
-        try {
-          await browser.close()
-        } catch {}
-      }
-      browser = null
       sessions.clear()
     }
-  }
+  },
 })

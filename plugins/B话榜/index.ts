@@ -1,12 +1,29 @@
 import { definePlugin, getAbsPluginDir } from 'mioki'
-import puppeteer from 'puppeteer-core'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { DatabaseSync } from 'node:sqlite'
+import { sharedBrowser, sharedQueues } from '../_shared/resource'
 
-import type { Browser } from 'puppeteer-core'
 import type { GroupMessageEvent } from 'napcat-sdk'
+
+async function runWithReaction<T>(event: any, task: () => Promise<T>, id = '60'): Promise<T> {
+  let reacted = false
+  if (typeof event?.addReaction === 'function') {
+    try {
+      await event.addReaction(id)
+      reacted = true
+    } catch {}
+  }
+
+  try {
+    return await task()
+  } finally {
+    if (reacted && typeof event?.delReaction === 'function') {
+      await event.delReaction(id).catch(() => {})
+    }
+  }
+}
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
@@ -73,13 +90,9 @@ interface KingCardData {
   activeUsers: number
 }
 
-let browser: Browser | null = null
-let browserLaunchPromise: Promise<Browser> | null = null
-
 function pad2(value: number): string {
   return String(value).padStart(2, '0')
 }
-
 
 function getLocalDate(date = new Date()) {
   const local = new Date(date.getTime() + SHANGHAI_OFFSET_MS)
@@ -249,9 +262,7 @@ function loadConfig(ctx: any): PluginConfig {
     const data = JSON.parse(readFileSync(configPath, 'utf-8')) as PluginConfig
     return {
       enabled: typeof data.enabled === 'boolean' ? data.enabled : true,
-      groupWhitelist: Array.isArray(data.groupWhitelist)
-        ? data.groupWhitelist.filter((id) => Number.isFinite(id))
-        : [],
+      groupWhitelist: Array.isArray(data.groupWhitelist) ? data.groupWhitelist.filter((id) => Number.isFinite(id)) : [],
       nickname: Array.isArray(data.nickname) ? data.nickname : [],
     }
   } catch {
@@ -270,92 +281,6 @@ function getWhitelistGroupName(config: PluginConfig, groupId: number): string {
 
 function isGroupEnabled(config: PluginConfig, groupId: number): boolean {
   return config.enabled && config.groupWhitelist.includes(groupId)
-}
-
-function getChromeCandidates(): string[] {
-  const localAppData = process.env.LOCALAPPDATA
-  const programFiles = process.env.PROGRAMFILES
-  const programFilesX86 = process.env['PROGRAMFILES(X86)']
-
-  return [
-    process.env.PUPPETEER_EXECUTABLE_PATH,
-    process.env.CHROME_PATH,
-    '/usr/bin/chromium',
-    '/usr/bin/chromium-browser',
-    '/usr/bin/google-chrome',
-    '/usr/bin/google-chrome-stable',
-    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-    programFiles ? join(programFiles, 'Google/Chrome/Application/chrome.exe') : '',
-    programFilesX86 ? join(programFilesX86, 'Google/Chrome/Application/chrome.exe') : '',
-    localAppData ? join(localAppData, 'Google/Chrome/Application/chrome.exe') : '',
-  ].filter((candidate): candidate is string => Boolean(candidate))
-}
-
-function findChromeExecutable(): string {
-  const executablePath = getChromeCandidates().find((candidate) => existsSync(candidate))
-  if (!executablePath) {
-    throw new Error('未找到 Chrome/Chromium，请设置 PUPPETEER_EXECUTABLE_PATH 或 CHROME_PATH')
-  }
-  return executablePath
-}
-
-async function getBrowser(): Promise<Browser> {
-  if (browser && browser.connected) {
-    return browser
-  }
-  browser = null
-
-  if (!browserLaunchPromise) {
-    browserLaunchPromise = puppeteer.launch({
-      executablePath: findChromeExecutable(),
-      headless: true,
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-gpu',
-        '--no-first-run',
-        '--no-zygote',
-        '--font-render-hinting=none',
-      ],
-      defaultViewport: {
-        width: 920,
-        height: 1200,
-        deviceScaleFactor: 2,
-      },
-    }).then((b) => {
-      browser = b
-      browserLaunchPromise = null
-      b.on('disconnected', () => {
-        if (browser === b) {
-          browser = null
-        }
-      })
-      return b
-    }).catch((err) => {
-      browserLaunchPromise = null
-      throw err
-    })
-  }
-
-  return browserLaunchPromise
-}
-
-async function closeBrowser(): Promise<void> {
-  if (browserLaunchPromise) {
-    try {
-      const b = await browserLaunchPromise
-      await b.close()
-    } catch {}
-    browserLaunchPromise = null
-    browser = null
-    return
-  }
-  if (!browser) return
-  try {
-    await browser.close()
-  } catch {}
-  browser = null
 }
 
 function getAvatarUrl(userId: number): string {
@@ -407,23 +332,12 @@ function initDb(ctx: any): DatabaseSync {
   return db
 }
 
-function recordMessage(db: DatabaseSync, event: GroupMessageEvent): void {
-  const groupId = event.group_id
-  const userId = event.user_id
-  const eventTime = (event.time || Math.floor(Date.now() / 1000)) * 1000
-  const dayKey = dateKeyFromDate(new Date(eventTime))
-  const nickname = event.sender?.nickname || ''
-  const card = event.sender?.card || ''
-  const groupName = event.group_name || ''
-
-  // 1. 更新群组信息
+function createMessageRecorder(db: DatabaseSync) {
   const updateGroup = db.prepare(`
     INSERT OR REPLACE INTO group_names (group_id, group_name, updated_at)
     VALUES (?, ?, ?)
   `)
-  updateGroup.run(groupId, groupName, Date.now())
 
-  // 2. 更新成员总体快照
   const updateUser = db.prepare(`
     INSERT INTO group_users (group_id, user_id, nickname, card, last_seen_at)
     VALUES (?, ?, ?, ?, ?)
@@ -432,9 +346,7 @@ function recordMessage(db: DatabaseSync, event: GroupMessageEvent): void {
       card = CASE WHEN excluded.card <> '' THEN excluded.card ELSE card END,
       last_seen_at = excluded.last_seen_at
   `)
-  updateUser.run(groupId, userId, nickname, card, eventTime)
 
-  // 3. 统计每日发言
   const updateMsg = db.prepare(`
     INSERT INTO group_msg_stats (group_id, user_id, date, count, nickname, card, last_seen_at)
     VALUES (?, ?, ?, 1, ?, ?, ?)
@@ -444,7 +356,35 @@ function recordMessage(db: DatabaseSync, event: GroupMessageEvent): void {
       card = CASE WHEN excluded.card <> '' THEN excluded.card ELSE card END,
       last_seen_at = excluded.last_seen_at
   `)
-  updateMsg.run(groupId, userId, dayKey, nickname, card, eventTime)
+
+  return {
+    record(event: GroupMessageEvent): void {
+      const groupId = event.group_id
+      const userId = event.user_id
+      const eventTime = (event.time || Math.floor(Date.now() / 1000)) * 1000
+      const dayKey = dateKeyFromDate(new Date(eventTime))
+      const nickname = event.sender?.nickname || ''
+      const card = event.sender?.card || ''
+      const groupName = event.group_name || ''
+
+      let inTransaction = false
+      try {
+        db.exec('BEGIN IMMEDIATE')
+        inTransaction = true
+        updateGroup.run(groupId, groupName, Date.now())
+        updateUser.run(groupId, userId, nickname, card, eventTime)
+        updateMsg.run(groupId, userId, dayKey, nickname, card, eventTime)
+        db.exec('COMMIT')
+      } catch (err) {
+        if (inTransaction) {
+          try {
+            db.exec('ROLLBACK')
+          } catch {}
+        }
+        throw err
+      }
+    },
+  }
 }
 
 function buildReport(
@@ -459,7 +399,8 @@ function buildReport(
   // 获取群名称
   const getGroupNameStmt = db.prepare('SELECT group_name FROM group_names WHERE group_id = ?')
   const nameRow = getGroupNameStmt.get(groupId) as { group_name: string } | undefined
-  const groupName = fallbackGroupName || nameRow?.group_name || getWhitelistGroupName(config, groupId) || String(groupId)
+  const groupName =
+    fallbackGroupName || nameRow?.group_name || getWhitelistGroupName(config, groupId) || String(groupId)
 
   // 获取发言总条数
   const totalStmt = db.prepare(`
@@ -485,11 +426,11 @@ function buildReport(
     ORDER BY count DESC, last_seen_at ASC, s.user_id ASC
   `)
   const rows = queryStmt.all(groupId, range.startKey, range.endKey) as {
-    user_id: number;
-    count: number;
-    last_seen_at: number;
-    nickname: string | null;
-    card: string | null;
+    user_id: number
+    count: number
+    last_seen_at: number
+    nickname: string | null
+    card: string | null
   }[]
 
   const sorted = rows.map((item) => {
@@ -733,23 +674,24 @@ function renderReportHtml(report: ReportData): string {
 }
 
 async function renderReportImage(report: ReportData): Promise<Buffer> {
-  const instance = await getBrowser()
-  const page = await instance.newPage()
+  return sharedBrowser.withPage(
+    async (page) => {
+      await page.setContent(renderReportHtml(report), { waitUntil: 'networkidle2', timeout: 20_000 })
 
-  try {
-    await page.setViewport({ width: 430, height: 1800, deviceScaleFactor: 2 })
-    await page.setContent(renderReportHtml(report), { waitUntil: 'networkidle0', timeout: 30_000 })
+      const target = await page.$('.card')
+      const image = await (target || page).screenshot({
+        type: 'png',
+        encoding: 'binary',
+      })
 
-    const target = await page.$('.card')
-    const image = await (target || page).screenshot({
-      type: 'png',
-      encoding: 'binary',
-    })
-
-    return Buffer.from(image)
-  } finally {
-    await page.close()
-  }
+      return Buffer.from(image)
+    },
+    {
+      label: `${PLUGIN_NAME} 榜单渲染`,
+      timeoutMs: 45_000,
+      viewport: { width: 430, height: 1800, deviceScaleFactor: 2 },
+    },
+  )
 }
 
 function renderKingCardHtml(card: KingCardData): string {
@@ -916,7 +858,9 @@ function renderKingCardHtml(card: KingCardData): string {
     <span class="sparkle sparkle-4">✦</span>
     <div class="crown">👑</div>
     <div class="title">B话王</div>
-    ${winner ? `
+    ${
+      winner
+        ? `
       <div class="avatar-ring">
         <div class="avatar-inner">
           <div class="avatar-fallback">${initial}</div>
@@ -926,9 +870,11 @@ function renderKingCardHtml(card: KingCardData): string {
       <div class="winner-name">${displayName}</div>
       <div class="winner-count">${count}</div>
       <div class="winner-count-label">条 B话</div>
-    ` : `
+    `
+        : `
       <div class="no-winner">暂无发言记录</div>
-    `}
+    `
+    }
     <div class="footer">
       <div class="group-name">${escapeHtml(card.groupName)}</div>
       <div class="period">${escapeHtml(card.periodLabel)}</div>
@@ -940,23 +886,24 @@ function renderKingCardHtml(card: KingCardData): string {
 }
 
 async function renderKingCardImage(card: KingCardData): Promise<Buffer> {
-  const instance = await getBrowser()
-  const page = await instance.newPage()
+  return sharedBrowser.withPage(
+    async (page) => {
+      await page.setContent(renderKingCardHtml(card), { waitUntil: 'networkidle2', timeout: 20_000 })
 
-  try {
-    await page.setViewport({ width: 400, height: 600, deviceScaleFactor: 2 })
-    await page.setContent(renderKingCardHtml(card), { waitUntil: 'networkidle0', timeout: 30_000 })
+      const target = await page.$('.card')
+      const image = await (target || page).screenshot({
+        type: 'png',
+        encoding: 'binary',
+      })
 
-    const target = await page.$('.card')
-    const image = await (target || page).screenshot({
-      type: 'png',
-      encoding: 'binary',
-    })
-
-    return Buffer.from(image)
-  } finally {
-    await page.close()
-  }
+      return Buffer.from(image)
+    },
+    {
+      label: `${PLUGIN_NAME} B话王渲染`,
+      timeoutMs: 45_000,
+      viewport: { width: 400, height: 600, deviceScaleFactor: 2 },
+    },
+  )
 }
 
 function isAdminCommand(text: string): boolean {
@@ -993,8 +940,13 @@ export default definePlugin({
   version: PLUGIN_VERSION,
   dependencies: ['puppeteer-core'],
   async setup(ctx) {
+    const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+    const runHeavy = <T>(label: string, task: () => Promise<T>) =>
+      sharedQueues.heavy.add(() => task(), { label, timeoutMs: 30 * 60_000 })
+
     // 1. 初始化 SQLite 数据库
     const db = initDb(ctx)
+    const recorder = createMessageRecorder(db)
 
     // 2. 加载配置文件（旧 whitelist.json 自动向后兼容迁移）
     let config = loadConfig(ctx)
@@ -1017,12 +969,7 @@ export default definePlugin({
 
       if (!main || main === '帮助') {
         await event.reply(
-          [
-            '#B话榜 帮助',
-            '#B话榜 白名单 列表',
-            '#B话榜 白名单 添加 [群号]',
-            '#B话榜 白名单 删除 [群号]',
-          ].join('\n'),
+          ['#B话榜 帮助', '#B话榜 白名单 列表', '#B话榜 白名单 添加 [群号]', '#B话榜 白名单 删除 [群号]'].join('\n'),
         )
         return true
       }
@@ -1082,13 +1029,17 @@ export default definePlugin({
     ctx.handle('message.group', async (event) => {
       // 重新读取配置以防 WebUI 编辑后未更新缓存
       config = loadConfig(ctx)
-      
+
       const text = ctx.text(event).trim()
       const enabledBeforeCommand = isGroupEnabled(config, event.group_id)
       const isSelfMessage = event.user_id === event.self_id || event.user_id === ctx.bot.user_id
 
       if (enabledBeforeCommand && !isSelfMessage) {
-        recordMessage(db, event)
+        try {
+          recorder.record(event)
+        } catch (err) {
+          ctx.logger.warn(`[${PLUGIN_NAME}] 记录群消息失败: ${err instanceof Error ? err.message : String(err)}`)
+        }
       }
 
       if (await handleAdminCommand(event, text)) return
@@ -1097,53 +1048,76 @@ export default definePlugin({
 
       const kingKind = parseKingCommand(text)
       if (kingKind) {
-        try {
-          const range = getDateRange(kingKind)
-          const kingTitle = normalizeText(text) === 'b话王' ? '本周 B话王' : range.title.replace('B话榜', 'B话王')
-          const kingCard = buildKingCardData(db, config, event.group_id, event.group_name, range, kingTitle)
-          const kingImage = await renderKingCardImage(kingCard)
-          await event.reply(ctx.segment.image(kingImage))
-        } catch (err) {
-          ctx.logger.error(`[${PLUGIN_NAME}] 渲染B话王失败: ${err instanceof Error ? err.message : String(err)}`)
-          await event.reply('B话王生成失败，请稍后再试')
-        }
+        await runWithReaction(event, async () => {
+          try {
+            const range = getDateRange(kingKind)
+            const kingTitle = normalizeText(text) === 'b话王' ? '本周 B话王' : range.title.replace('B话榜', 'B话王')
+            const kingCard = buildKingCardData(db, config, event.group_id, event.group_name, range, kingTitle)
+            const kingImage = await renderKingCardImage(kingCard)
+            await event.reply(ctx.segment.image(kingImage))
+          } catch (err) {
+            ctx.logger.error(`[${PLUGIN_NAME}] 渲染B话王失败: ${err instanceof Error ? err.message : String(err)}`)
+            await event.reply('B话王生成失败，请稍后再试')
+          }
+        })
         return
       }
 
       const queryKind = parseQueryCommand(text)
       if (!queryKind) return
 
-      try {
-        const range = getDateRange(queryKind)
-        const report = buildReport(db, config, event.group_id, event.group_name, range, 'ranking')
-        await replyImage(event, report)
-      } catch (err) {
-        ctx.logger.error(`[${PLUGIN_NAME}] 渲染榜单失败: ${err instanceof Error ? err.message : String(err)}`)
-        await event.reply('B话榜生成失败，请稍后再试')
-      }
+      await runWithReaction(event, async () => {
+        try {
+          const range = getDateRange(queryKind)
+          const report = buildReport(db, config, event.group_id, event.group_name, range, 'ranking')
+          await replyImage(event, report)
+        } catch (err) {
+          ctx.logger.error(`[${PLUGIN_NAME}] 渲染榜单失败: ${err instanceof Error ? err.message : String(err)}`)
+          await event.reply('B话榜生成失败，请稍后再试')
+        }
+      })
     })
+
+    let weeklySending = false
 
     // 定时发送上周 B话榜/B话王
     ctx.cron('1 0 * * 1', async () => {
-      config = loadConfig(ctx)
-      const range = getDateRange('lastWeek')
+      if (weeklySending) {
+        ctx.logger.warn(`[${PLUGIN_NAME}] 上一次自动群发仍在执行，本次跳过`)
+        return
+      }
 
-      for (const groupId of config.groupWhitelist) {
-        try {
-          const report = buildReport(db, config, groupId, '', range, 'ranking', '上周 B话榜')
-          const image = await renderReportImage(report)
-          await ctx.bot.sendGroupMsg(groupId, [ctx.segment.image(image)])
-          await new Promise((resolve) => setTimeout(resolve, 200))
+      weeklySending = true
 
-          const kingCard = buildKingCardData(db, config, groupId, '', range, '上周 B话王')
-          if (kingCard.winner) {
-            const kingImage = await renderKingCardImage(kingCard)
-            await ctx.bot.sendGroupMsg(groupId, [ctx.segment.image(kingImage)])
-            await new Promise((resolve) => setTimeout(resolve, 200))
+      try {
+        await runHeavy(`${PLUGIN_NAME} 自动群发`, async () => {
+          config = loadConfig(ctx)
+          if (!config.enabled) return
+
+          const range = getDateRange('lastWeek')
+
+          for (const groupId of [...config.groupWhitelist]) {
+            try {
+              const report = buildReport(db, config, groupId, '', range, 'ranking', '上周 B话榜')
+              const image = await renderReportImage(report)
+              await ctx.bot.sendGroupMsg(groupId, [ctx.segment.image(image)])
+              await delay(1_200)
+
+              const kingCard = buildKingCardData(db, config, groupId, '', range, '上周 B话王')
+              if (kingCard.winner) {
+                const kingImage = await renderKingCardImage(kingCard)
+                await ctx.bot.sendGroupMsg(groupId, [ctx.segment.image(kingImage)])
+                await delay(1_200)
+              }
+            } catch (err) {
+              ctx.logger.warn(
+                `[${PLUGIN_NAME}] 群 ${groupId} 定时发送失败: ${err instanceof Error ? err.message : String(err)}`,
+              )
+            }
           }
-        } catch (err) {
-          ctx.logger.warn(`[${PLUGIN_NAME}] 群 ${groupId} 定时发送失败: ${err instanceof Error ? err.message : String(err)}`)
-        }
+        })
+      } finally {
+        weeklySending = false
       }
     })
 
@@ -1155,9 +1129,13 @@ export default definePlugin({
         const deleteStmt = db.prepare('DELETE FROM group_msg_stats WHERE date < ?')
         const result = deleteStmt.run(thresholdDate)
         db.exec('COMMIT')
-        
+
         ctx.logger.info(`[${PLUGIN_NAME}] 自动清理 60 天前发言数据完成，删除了 ${result.changes} 条历史记录。`)
-        db.exec('VACUUM')
+
+        if (getLocalDate().weekday === 1 && result.changes > 0) {
+          db.exec('VACUUM')
+          ctx.logger.info(`[${PLUGIN_NAME}] 已完成每周数据库整理`)
+        }
       } catch (err: any) {
         try {
           db.exec('ROLLBACK')
@@ -1169,7 +1147,6 @@ export default definePlugin({
     ctx.logger.info(`${PLUGIN_NAME} 插件已加载（SQLite版），白名单群数：${config.groupWhitelist.length} 个`)
 
     return async () => {
-      await closeBrowser()
       db.close()
       ctx.logger.info(`${PLUGIN_NAME} 数据库连接已关闭`)
     }

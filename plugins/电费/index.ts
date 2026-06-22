@@ -3,9 +3,28 @@ import axios from 'axios'
 import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync, readdirSync, unlink } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import puppeteer, { Browser } from 'puppeteer-core'
 import MarkdownIt from 'markdown-it'
+// @ts-ignore missing types
 import mk from 'markdown-it-katex'
+import { sharedBrowser } from '../_shared/resource'
+
+async function runWithReaction<T>(event: any, task: () => Promise<T>, id = '60'): Promise<T> {
+  let reacted = false
+  if (typeof event?.addReaction === 'function') {
+    try {
+      await event.addReaction(id)
+      reacted = true
+    } catch {}
+  }
+
+  try {
+    return await task()
+  } finally {
+    if (reacted && typeof event?.delReaction === 'function') {
+      await event.delReaction(id).catch(() => {})
+    }
+  }
+}
 
 // 获取当前插件目录路径
 const __filename = fileURLToPath(import.meta.url)
@@ -19,14 +38,13 @@ interface PluginConfig {
   maxHistoryDays: number
   contentWidth: number
   padding: number
-  browserPath: string
   apiBaseUrl: string
 }
 
 interface WarningStateRecord {
-  mutedUntilRecover: boolean;
-  lastWarningAt?: string;
-  lastKnownBalance?: number;
+  mutedUntilRecover: boolean
+  lastWarningAt?: string
+  lastKnownBalance?: number
 }
 
 interface PluginData {
@@ -34,35 +52,32 @@ interface PluginData {
   warningState: Record<string, WarningStateRecord>
 }
 
-// 全局浏览器实例
-let globalBrowser: Browser | null = null;
-let browserLaunchPromise: Promise<Browser> | null = null;
-
 // 初始化 Markdown 解析器
-const md = new MarkdownIt();
-md.use(mk);
+const md = new MarkdownIt()
+md.use(mk)
 
-const STUDENT_ID_REGEX = /^202\d{6,12}$/;
-const UNSUBSCRIBE_COMMANDS = new Set(['T', 't', '退订', '取消提醒', '不再提醒']);
+const STUDENT_ID_REGEX = /^202\d{6,12}$/
+const UNSUBSCRIBE_COMMANDS = new Set(['T', 't', '退订', '取消提醒', '不再提醒'])
+const ELECTRICITY_UNIT_PRICE = 0.57
 
 function isUnsubscribeCommand(text: string) {
-  return UNSUBSCRIBE_COMMANDS.has(text.trim());
+  return UNSUBSCRIBE_COMMANDS.has(text.trim())
 }
 
 function getEventUserId(e: any): string {
-  return String(e.sender?.user_id ?? e.user_id ?? '');
+  return String(e.sender?.user_id ?? e.user_id ?? '')
 }
 
 function getPersonInfoApi(personNo: string, config: PluginConfig) {
-  return `${config.apiBaseUrl}/personInfo?personNo=${personNo}`;
+  return `${config.apiBaseUrl}/personInfo?personNo=${personNo}`
 }
 
 function getElecListApi(personNo: string, config: PluginConfig) {
-  return `${config.apiBaseUrl}/elecList?personNo=${personNo}`;
+  return `${config.apiBaseUrl}/elecList?personNo=${personNo}`
 }
 
 function getQueryRecordApi(personNo: string, queryMonth: string, config: PluginConfig) {
-  return `${config.apiBaseUrl}/queryRecord?personNo=${personNo}&queryFlag=0&queryMonth=${queryMonth}`;
+  return `${config.apiBaseUrl}/queryRecord?personNo=${personNo}&queryFlag=0&queryMonth=${queryMonth}`
 }
 
 /**
@@ -298,166 +313,76 @@ const GLOBAL_STYLES = `
       grid-template-columns: 1fr;
     }
   }
-`;
-
-function findChromeExecutable(configuredPath?: string): string {
-  if (configuredPath && existsSync(configuredPath)) {
-    return configuredPath
-  }
-  const localAppData = process.env.LOCALAPPDATA
-  const programFiles = process.env.PROGRAMFILES
-  const programFilesX86 = process.env['PROGRAMFILES(X86)']
-
-  const candidates = [
-    process.env.PUPPETEER_EXECUTABLE_PATH,
-    process.env.CHROME_PATH,
-    configuredPath,
-    '/usr/bin/chromium',
-    '/usr/bin/chromium-browser',
-    '/usr/bin/google-chrome',
-    '/usr/bin/google-chrome-stable',
-    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-    programFiles ? join(programFiles, 'Google/Chrome/Application/chrome.exe') : '',
-    programFilesX86 ? join(programFilesX86, 'Google/Chrome/Application/chrome.exe') : '',
-    localAppData ? join(localAppData, 'Google/Chrome/Application/chrome.exe') : '',
-  ].filter((c): c is string => Boolean(c))
-
-  const executablePath = candidates.find((c) => existsSync(c))
-  if (!executablePath) {
-    throw new Error('未找到 Chrome/Chromium，请设置 PUPPETEER_EXECUTABLE_PATH 或 CHROME_PATH')
-  }
-  return executablePath
-}
+`
 
 /**
  * 获取浏览器实例
  */
-async function getBrowserInstance(config: PluginConfig): Promise<Browser> {
-  if (globalBrowser && globalBrowser.connected) {
-    return globalBrowser;
-  }
-  globalBrowser = null;
-
-  if (!browserLaunchPromise) {
-    console.log('启动浏览器实例...');
-    browserLaunchPromise = puppeteer.launch({
-      executablePath: findChromeExecutable(config.browserPath),
-      headless: true,
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-gpu',
-        '--disable-software-rasterizer'
-      ],
-      timeout: 60000
-    }).then((b) => {
-      globalBrowser = b;
-      browserLaunchPromise = null;
-      b.on('disconnected', () => {
-        if (globalBrowser === b) {
-          globalBrowser = null;
-        }
-      });
-      return b;
-    }).catch((err) => {
-      browserLaunchPromise = null;
-      throw err;
-    });
-  }
-  return browserLaunchPromise;
-}
-
 /**
  * 关闭浏览器实例
  */
-async function closeBrowserInstance() {
-  if (browserLaunchPromise) {
-    console.log('等待正在启动的浏览器实例并关闭...');
-    try {
-      const b = await browserLaunchPromise;
-      const pages = await b.pages();
-      await Promise.all(pages.map(page => page.close().catch(() => {})));
-      await b.close();
-    } catch (err) {
-      console.error('关闭正在启动的浏览器时出错:', err);
-    } finally {
-      browserLaunchPromise = null;
-      globalBrowser = null;
-    }
-    return;
-  }
-  if (globalBrowser) {
-    console.log('关闭浏览器实例...');
-    try {
-      const pages = await globalBrowser.pages();
-      await Promise.all(pages.map(page => page.close().catch(() => {})));
-      await globalBrowser.close();
-    } catch (err) {
-      console.error('关闭浏览器时出错:', err);
-    } finally {
-      globalBrowser = null;
-    }
-  }
-}
-
 /**
  * 渲染 HTML 为图片
  */
 async function renderHTMLToImage(html: string, config: PluginConfig): Promise<string> {
-  console.log('渲染 HTML...');
+  console.log('渲染 HTML...')
 
-  const browser = await getBrowserInstance(config);
-  const page = await browser.newPage();
-  try {
-    const totalWidth = config.contentWidth + config.padding * 2;
+  return sharedBrowser
+    .withPage(
+      async (page) => {
+        const totalWidth = config.contentWidth + config.padding * 2
 
-    await page.setViewport({
-      width: totalWidth,
-      height: 100,
-      deviceScaleFactor: 2,
-    });
+        await page.setViewport({
+          width: totalWidth,
+          height: 100,
+          deviceScaleFactor: 2,
+        })
 
-    console.log('加载 HTML 内容...');
-    await page.setContent(html, {
-      waitUntil: 'networkidle0',
-      timeout: 30000
-    });
+        console.log('加载 HTML 内容...')
+        await page.setContent(html, {
+          waitUntil: 'networkidle0',
+          timeout: 30000,
+        })
 
-    console.log('等待渲染...');
-    await new Promise(resolve => setTimeout(resolve, config.renderWaitTime));
+        console.log('等待渲染...')
+        await new Promise((resolve) => setTimeout(resolve, config.renderWaitTime))
 
-    const height = await page.evaluate(() => {
-      return document.documentElement.scrollHeight;
-    });
+        const height = await page.evaluate(() => {
+          return document.documentElement.scrollHeight
+        })
 
-    console.log('内容高度:', height);
-    await page.setViewport({
-      width: totalWidth,
-      height: Math.ceil(height),
-      deviceScaleFactor: 2,
-    });
+        console.log('内容高度:', height)
+        await page.setViewport({
+          width: totalWidth,
+          height: Math.ceil(height),
+          deviceScaleFactor: 2,
+        })
 
-    const tempDir = join(getAbsPluginDir(), '电费', 'temp');
-    if (!existsSync(tempDir)) {
-      mkdirSync(tempDir, { recursive: true });
-    }
+        const tempDir = join(getAbsPluginDir(), '电费', 'temp')
+        if (!existsSync(tempDir)) {
+          mkdirSync(tempDir, { recursive: true })
+        }
 
-    const imagePath = join(tempDir, `electric_${Date.now()}.png`);
-    console.log('截图保存到:', imagePath);
-    await page.screenshot({
-      path: imagePath,
-      type: 'png',
-      fullPage: true
-    });
+        const imagePath = join(tempDir, `electric_${Date.now()}.png`)
+        console.log('截图保存到:', imagePath)
+        await page.screenshot({
+          path: imagePath,
+          type: 'png',
+          fullPage: true,
+        })
 
-    return imagePath;
-  } catch (error) {
-    console.error('渲染 HTML 出错:', error);
-    throw error;
-  } finally {
-    await page.close().catch(() => {});
-  }
+        return imagePath
+      },
+      {
+        label: 'electricity image render',
+        timeoutMs: Math.max(35_000, config.renderWaitTime + 30_000),
+        viewport: { width: config.contentWidth + config.padding * 2, height: 100, deviceScaleFactor: 2 },
+      },
+    )
+    .catch((error) => {
+      console.error('渲染 HTML 出错:', error)
+      throw error
+    })
 }
 
 /**
@@ -465,29 +390,29 @@ async function renderHTMLToImage(html: string, config: PluginConfig): Promise<st
  */
 async function getElectricityData(personNo: string, config: PluginConfig) {
   try {
-    console.log('获取电费数据...');
-  
-    const personInfoResponse = await axios.get(getPersonInfoApi(personNo, config));
-    const personInfo = personInfoResponse.data;
-  
+    console.log('获取电费数据...')
+
+    const personInfoResponse = await axios.get(getPersonInfoApi(personNo, config))
+    const personInfo = personInfoResponse.data
+
     if (personInfo.code !== 200) {
-      throw new Error(`API1 请求失败: ${personInfo.msg}`);
+      throw new Error(`API1 请求失败: ${personInfo.msg}`)
     }
 
-    const elecListResponse = await axios.get(getElecListApi(personNo, config));
-    const elecList = elecListResponse.data;
-  
+    const elecListResponse = await axios.get(getElecListApi(personNo, config))
+    const elecList = elecListResponse.data
+
     if (elecList.code !== 200) {
-      throw new Error(`API2 请求失败: ${elecList.msg}`);
+      throw new Error(`API2 请求失败: ${elecList.msg}`)
     }
 
     return {
       personInfo: personInfo.data,
-      elecList: elecList.data
-    };
+      elecList: elecList.data,
+    }
   } catch (error) {
-    console.error('获取电费数据失败:', error);
-    throw error;
+    console.error('获取电费数据失败:', error)
+    throw error
   }
 }
 
@@ -496,47 +421,47 @@ async function getElectricityData(personNo: string, config: PluginConfig) {
  */
 async function getElectricityHistory(personNo: string, config: PluginConfig) {
   try {
-    console.log('获取电费历史数据...');
-  
-    const now = new Date();
-    const currentYear = now.getFullYear();
-    const currentMonth = now.getMonth() + 1;
-  
-    const historyData = [];
-  
+    console.log('获取电费历史数据...')
+
+    const now = new Date()
+    const currentYear = now.getFullYear()
+    const currentMonth = now.getMonth() + 1
+
+    const historyData = []
+
     for (let i = 0; i < 3; i++) {
-      let year = currentYear;
-      let month = currentMonth - i;
-    
+      let year = currentYear
+      let month = currentMonth - i
+
       if (month <= 0) {
-        month += 12;
-        year -= 1;
+        month += 12
+        year -= 1
       }
-    
-      const queryMonth = `${year}${month.toString().padStart(2, '0')}`;
-      const apiUrl = getQueryRecordApi(personNo, queryMonth, config);
-    
-      console.log(`获取 ${queryMonth} 数据...`);
-      const response = await axios.get(apiUrl);
-      const data = response.data;
-    
+
+      const queryMonth = `${year}${month.toString().padStart(2, '0')}`
+      const apiUrl = getQueryRecordApi(personNo, queryMonth, config)
+
+      console.log(`获取 ${queryMonth} 数据...`)
+      const response = await axios.get(apiUrl)
+      const data = response.data
+
       if (data.code === 200 && data.data) {
         const consumptionRecords = data.data
           .filter((record: any) => record.dealName === '消费')
-          .sort((a: any, b: any) => new Date(b.dealTime).getTime() - new Date(a.dealTime).getTime());
-      
-        historyData.push(...consumptionRecords);
+          .sort((a: any, b: any) => new Date(b.dealTime).getTime() - new Date(a.dealTime).getTime())
+
+        historyData.push(...consumptionRecords)
       }
-    
+
       if (historyData.length >= config.maxHistoryDays) {
-        break;
+        break
       }
     }
-  
-    return historyData.slice(0, config.maxHistoryDays);
+
+    return historyData.slice(0, config.maxHistoryDays)
   } catch (error) {
-    console.error('获取电费历史数据失败:', error);
-    throw error;
+    console.error('获取电费历史数据失败:', error)
+    throw error
   }
 }
 
@@ -545,100 +470,380 @@ async function getElectricityHistory(personNo: string, config: PluginConfig) {
  */
 async function getCurrentMonthHistory(personNo: string, config: PluginConfig) {
   try {
-    console.log('获取当月电费历史数据...');
-  
-    const now = new Date();
-    const currentYear = now.getFullYear();
-    const currentMonth = now.getMonth() + 1;
-    const queryMonth = `${currentYear}${currentMonth.toString().padStart(2, '0')}`;
-    const apiUrl = getQueryRecordApi(personNo, queryMonth, config);
-  
-    console.log(`获取 ${queryMonth} 数据...`);
-    const response = await axios.get(apiUrl);
-    const data = response.data;
-  
+    console.log('获取当月电费历史数据...')
+
+    const now = new Date()
+    const currentYear = now.getFullYear()
+    const currentMonth = now.getMonth() + 1
+    const queryMonth = `${currentYear}${currentMonth.toString().padStart(2, '0')}`
+    const apiUrl = getQueryRecordApi(personNo, queryMonth, config)
+
+    console.log(`获取 ${queryMonth} 数据...`)
+    const response = await axios.get(apiUrl)
+    const data = response.data
+
     if (data.code === 200 && data.data) {
       const consumptionRecords = data.data
         .filter((record: any) => record.dealName === '消费')
-        .sort((a: any, b: any) => new Date(b.dealTime).getTime() - new Date(a.dealTime).getTime());
-    
-      return consumptionRecords;
-    }
-  
-    return [];
-  } catch (error) {
-    console.error('获取当月电费历史数据失败:', error);
-    throw error;
-  }
-}
+        .sort((a: any, b: any) => new Date(b.dealTime).getTime() - new Date(a.dealTime).getTime())
 
-/**
- * 计算预计可用天数
- */
-function calculateEstimatedDays(balance: number, dailyAverage: number): number {
-  if (dailyAverage <= 0) return 0;
-  return Math.floor(balance / dailyAverage);
+      return consumptionRecords
+    }
+
+    return []
+  } catch (error) {
+    console.error('获取当月电费历史数据失败:', error)
+    throw error
+  }
 }
 
 /**
  * 格式化日期
  */
-function formatDate(dateString: string): { date: string, dayOfWeek: string } {
-  const date = new Date(dateString);
-  const days = ['日', '一', '二', '三', '四', '五', '六'];
+function formatDate(dateString: string): { date: string; dayOfWeek: string } {
+  const date = new Date(dateString)
+  const days = ['日', '一', '二', '三', '四', '五', '六']
 
   return {
     date: `${(date.getMonth() + 1).toString().padStart(2, '0')}/${date.getDate().toString().padStart(2, '0')}`,
-    dayOfWeek: `周${days[date.getDay()]}`
-  };
+    dayOfWeek: `周${days[date.getDay()]}`,
+  }
+}
+
+function formatCurrentDate(date = new Date()): string {
+  return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日`
+}
+
+function getElectricityPageStyles(config: PluginConfig): string {
+  return `
+    :root {
+      color-scheme: light;
+      --md-primary: #006a60;
+      --md-on-primary: #ffffff;
+      --md-primary-container: #9cf2e5;
+      --md-on-primary-container: #00201c;
+      --md-secondary-container: #cce8e1;
+      --md-on-secondary-container: #0f1f1c;
+      --md-tertiary: #6d5e00;
+      --md-tertiary-container: #f9e287;
+      --md-on-tertiary-container: #211b00;
+      --md-error: #ba1a1a;
+      --md-error-container: #ffdad6;
+      --md-on-error-container: #410002;
+      --md-background: #fbfdf9;
+      --md-surface: #fbfdf9;
+      --md-surface-container-lowest: #ffffff;
+      --md-surface-container-low: #f5f7f3;
+      --md-surface-container: #eef2ed;
+      --md-surface-container-high: #e8ece7;
+      --md-on-surface: #191c1b;
+      --md-on-surface-variant: #414945;
+      --md-outline-variant: #bec9c4;
+      --md-shadow: rgba(25, 28, 27, 0.16);
+      --elevation-1: 0 1px 2px rgba(25, 28, 27, 0.14), 0 1px 3px 1px rgba(25, 28, 27, 0.08);
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      min-height: 100vh;
+      background: var(--md-background);
+      color: var(--md-on-surface);
+      font-family: "Roboto", "Noto Sans SC", "Microsoft YaHei", "PingFang SC", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      padding: ${config.padding}px;
+      line-height: 1.5;
+      letter-spacing: 0;
+    }
+
+    .page {
+      width: 100%;
+      max-width: ${config.contentWidth}px;
+      margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .top-bar {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 24px;
+      padding: 4px 0 8px;
+    }
+
+    .eyebrow {
+      color: var(--md-on-surface-variant);
+      font-size: 13px;
+      font-weight: 500;
+    }
+
+    h1 {
+      margin-top: 4px;
+      color: var(--md-on-surface);
+      font-size: 30px;
+      font-weight: 600;
+      line-height: 1.2;
+      letter-spacing: 0;
+    }
+
+    .date-chip,
+    .status-chip {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      white-space: nowrap;
+      font-size: 14px;
+      font-weight: 500;
+      line-height: 1;
+    }
+
+    .date-chip {
+      min-height: 40px;
+      padding: 0 16px;
+      border-radius: 20px;
+      background: var(--md-secondary-container);
+      color: var(--md-on-secondary-container);
+    }
+
+    .status-chip {
+      min-height: 32px;
+      padding: 0 12px;
+      border-radius: 16px;
+      font-size: 13px;
+    }
+
+    .status-chip.normal {
+      background: var(--md-primary-container);
+      color: var(--md-on-primary-container);
+    }
+
+    .status-chip.warning {
+      background: var(--md-error-container);
+      color: var(--md-on-error-container);
+    }
+
+    .balance-panel,
+    .metric-card,
+    .history-section {
+      background: var(--md-surface-container-lowest);
+      border: 1px solid var(--md-outline-variant);
+      border-radius: 8px;
+      box-shadow: var(--elevation-1);
+    }
+
+    .balance-panel {
+      display: grid;
+      gap: 18px;
+      padding: 28px;
+      border-left: 6px solid var(--md-primary);
+    }
+
+    .section-heading {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      color: var(--md-on-surface);
+      font-size: 16px;
+      font-weight: 600;
+    }
+
+    .balance-amount {
+      color: var(--md-primary);
+      font-size: 48px;
+      font-weight: 700;
+      line-height: 1;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .balance-meta,
+    .metric-support,
+    .section-subtitle {
+      color: var(--md-on-surface-variant);
+      font-size: 14px;
+    }
+
+    .metric-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+    }
+
+    .metric-grid.history-summary {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+
+    .metric-card {
+      min-height: 138px;
+      padding: 22px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      gap: 18px;
+      border-top: 4px solid var(--md-primary);
+    }
+
+    .metric-card.tertiary {
+      border-top-color: var(--md-tertiary);
+    }
+
+    .metric-card.neutral {
+      border-top-color: var(--md-on-surface-variant);
+    }
+
+    .metric-label {
+      color: var(--md-on-surface-variant);
+      font-size: 14px;
+      font-weight: 500;
+    }
+
+    .metric-value {
+      color: var(--md-on-surface);
+      font-size: 34px;
+      font-weight: 700;
+      line-height: 1.08;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .metric-value.compact {
+      font-size: 28px;
+    }
+
+    .unit {
+      margin-left: 4px;
+      color: var(--md-on-surface-variant);
+      font-size: 0.52em;
+      font-weight: 500;
+    }
+
+    .metric-support {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .support-value {
+      color: var(--md-on-surface);
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .history-section {
+      padding: 24px;
+      display: grid;
+      gap: 18px;
+    }
+
+    .table-container {
+      overflow: hidden;
+      border: 1px solid var(--md-outline-variant);
+      border-radius: 8px;
+      background: var(--md-surface-container-lowest);
+    }
+
+    .history-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+
+    .history-table th {
+      background: var(--md-surface-container-low);
+      color: var(--md-on-surface-variant);
+      font-weight: 500;
+      text-align: left;
+      padding: 14px 16px;
+    }
+
+    .history-table td {
+      padding: 14px 16px;
+      border-top: 1px solid var(--md-outline-variant);
+    }
+
+    .history-table th:nth-child(n + 2),
+    .history-table td:nth-child(n + 2) {
+      text-align: right;
+    }
+
+    .date-cell {
+      color: var(--md-on-surface);
+      font-weight: 600;
+    }
+
+    .cost-cell {
+      font-variant-numeric: tabular-nums;
+      font-weight: 500;
+    }
+
+    .empty-cell {
+      padding: 28px 16px !important;
+      color: var(--md-on-surface-variant);
+      text-align: center !important;
+    }
+
+    @media (max-width: 720px) {
+      body {
+        padding: 20px;
+      }
+
+      .top-bar {
+        flex-direction: column;
+        gap: 12px;
+      }
+
+      h1 {
+        font-size: 26px;
+      }
+
+      .metric-grid,
+      .metric-grid.history-summary {
+        grid-template-columns: 1fr;
+      }
+
+      .balance-amount {
+        font-size: 40px;
+      }
+    }
+  `
 }
 
 /**
  * 生成电费状态 HTML
  */
 async function generateElectricityStatusHTML(personNo: string, config: PluginConfig): Promise<string> {
-  const data = await getElectricityData(personNo, config);
-  const currentMonthHistory = await getCurrentMonthHistory(personNo, config);
-  const history = await getElectricityHistory(personNo, config);
+  const data = await getElectricityData(personNo, config)
+  const currentMonthHistory = await getCurrentMonthHistory(personNo, config)
+  const history = await getElectricityHistory(personNo, config)
 
-  const { personInfo, elecList } = data;
-  const currentBalance = Math.abs(parseFloat(personInfo.roomBalance));
-  const currentReading = elecList[0]?.lastAmount || 0;
+  const { personInfo } = data
+  const currentBalance = Math.abs(parseFloat(personInfo.roomBalance) || 0)
 
-  let yesterdayUsage = 0;
-  let monthlyTotal = 0;
+  let yesterdayCost = 0
+  let monthlyCost = 0
 
   // 昨日用电
   if (history.length > 0) {
-    yesterdayUsage = parseFloat(history[0].dealMoney) || 0;
+    yesterdayCost = parseFloat(history[0].dealMoney) || 0
   }
 
   // 本月累计（从当月历史记录求和）
   if (currentMonthHistory.length > 0) {
-    monthlyTotal = currentMonthHistory.reduce((total: number, record: any) => {
-      return total + parseFloat(record.dealMoney || 0);
-    }, 0);
+    monthlyCost = currentMonthHistory.reduce((total: number, record: any) => {
+      return total + (parseFloat(record.dealMoney || 0) || 0)
+    }, 0)
   }
 
-  const dailyAverage = monthlyTotal / (currentMonthHistory.length || 1);
-  const estimatedDays = calculateEstimatedDays(currentBalance, dailyAverage);
-  const isLowBalance = currentBalance < config.warningBalance;
-
-  // 计算剩余电量（按 0.57 元/度估算）
-  const remainingElectricity = (currentBalance / 0.57).toFixed(2);
-  
-  // 计算本月剩余天数
-  const now = new Date();
-  const currentMonth = now.getMonth();
-  const currentYear = now.getFullYear();
-  const daysInMonth = new Date(currentYear, currentMonth + 1, 0).getDate();
-  const remainingDaysInMonth = daysInMonth - now.getDate();
-  
-  // 预计月耗（按当前使用速度推算）
-  const estimatedMonthlyUsage = (monthlyTotal / 0.57) * (daysInMonth / now.getDate());
-  
-  // 判断余额状态
-  const balanceStatus = currentBalance >= 50 ? '余额充足' : '余额不足';
+  const balanceIsLow = currentBalance < config.warningBalance
+  const balanceStatus = balanceIsLow ? '低于预警' : '余额正常'
+  const currentDate = formatCurrentDate()
+  const yesterdayElectricity = yesterdayCost / ELECTRICITY_UNIT_PRICE
+  const monthlyElectricity = monthlyCost / ELECTRICITY_UNIT_PRICE
 
   const html = `
 <!DOCTYPE html>
@@ -648,471 +853,96 @@ async function generateElectricityStatusHTML(personNo: string, config: PluginCon
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>电费概览</title>
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
-        body {
-            background: linear-gradient(135deg, #0f1419 0%, #1a1f2e 100%);
-            color: #fff;
-            font-family: "汉仪文黑-85W", "HYWenHei-85W", "汉仪文黑", "HYWenHei", "Microsoft YaHei", "SimHei", "PingFang SC", "Noto Sans SC", -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            padding: 20px;
-            min-height: 100vh;
-        }
-
-        /* 顶部标题栏 */
-        .header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 30px;
-        }
-
-        .header-title {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            font-size: 28px;
-            font-weight: bold;
-        }
-
-        .dot {
-            width: 12px;
-            height: 12px;
-            background: #00d4ff;
-            border-radius: 50%;
-        }
-
-        .date-badge {
-            background: rgba(255, 255, 255, 0.1);
-            border: 1px solid rgba(255, 255, 255, 0.2);
-            padding: 10px 20px;
-            border-radius: 25px;  
-            font-size: 14px;
-            backdrop-filter: blur(10px);
-        }
-
-        /* 关键指标卡片 */
-        .key-metrics {
-            background: linear-gradient(135deg, rgba(100, 50, 150, 0.4) 0%, rgba(80, 30, 120, 0.3) 100%);
-            border: 2px solid;
-            border-image: linear-gradient(135deg, #7c3aed, #06b6d4) 1;
-            border-radius: 20px;
-            padding: 30px;
-            margin-bottom: 20px;
-            display: grid;
-            grid-template-columns: repeat(3, 1fr);
-            gap: 30px;
-        }
-
-        .metric-item {
-            text-align: center;
-        }
-
-        .metric-label {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            font-size: 14px;
-            color: #b0b8c1;
-            margin-bottom: 10px;
-        }
-
-        .metric-dot {
-            width: 10px;
-            height: 10px;
-            background: #a78bfa;
-            border-radius: 50%;
-        }
-
-        .metric-value {
-            font-size: 48px;
-            font-weight: bold;
-            margin-bottom: 10px;
-        }
-
-        .value-yellow { color: #fbbf24; }
-        .value-cyan { color: #06b6d4; }
-        .value-purple { color: #d8b4fe; }
-
-        .metric-desc {
-            font-size: 12px;
-            color: #888;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 5px;
-        }
-
-        .warning-icon {
-            color: #f59e0b;
-            font-size: 14px;
-        }
-
-        .status-icon {
-            color: #10b981;
-        }
-
-        /* 双卡片行 */
-        .cards-row {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 15px;
-            margin-bottom: 20px;
-        }
-
-        .card {
-            background: rgba(15, 23, 42, 0.6);
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            border-radius: 15px;
-            padding: 25px;
-        }
-
-        .card-title {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            font-size: 16px;
-            font-weight: bold;
-            margin-bottom: 25px;
-        }
-
-        .card-dot-cyan { background: #06b6d4; }
-        .card-dot-pink { background: #d946ef; }
-
-        .card-dot {
-            width: 10px;
-            height: 10px;
-            border-radius: 50%;
-        }
-
-        .card-badge {
-            margin-left: auto;
-            border: 1px solid #10b981;
-            color: #10b981;
-            padding: 5px 12px;
-            border-radius: 12px;
-            font-size: 12px;
-        }
-
-        .card-content {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 20px;
-        }
-
-        .card-stat {
-            display: flex;
-            flex-direction: column;
-        }
-
-        .stat-label {
-            font-size: 12px;
-            color: #888;
-            margin-bottom: 8px;
-        }
-
-        .stat-value {
-            font-size: 32px;
-            font-weight: bold;
-        }
-
-        .value-cyan { color: #06b6d4; }
-        .value-pink { color: #ec4899; }
-
-        /* 账户余额卡片 */
-        .balance-card {
-            background: linear-gradient(135deg, rgba(120, 40, 60, 0.3) 0%, rgba(80, 30, 50, 0.2) 100%);
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            border-radius: 15px;
-            padding: 30px;
-            margin-bottom: 20px;
-        }
-
-        .balance-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 30px;
-        }
-
-        .balance-title {
-            font-size: 20px;
-            font-weight: bold;
-        }
-
-        .balance-warning {
-            border: 1px solid #f97316;
-            color: #f97316;
-            padding: 8px 16px;
-            border-radius: 12px;
-            font-size: 12px;
-        }
-
-        .balance-normal {
-            border: 1px solid #10b981;
-            color: #10b981;
-            padding: 8px 16px;
-            border-radius: 12px;
-            font-size: 12px;
-        }
-
-        .balance-content {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 40px;
-        }
-
-        .balance-stat {
-            display: flex;
-            flex-direction: column;
-        }
-
-        .balance-label {
-            font-size: 14px;
-            color: #999;
-            margin-bottom: 12px;
-        }
-
-        .balance-value {
-            font-size: 40px;
-            font-weight: bold;
-            color: #ff6b6b;
-            margin-bottom: 15px;
-        }
-
-        .progress-bar {
-            width: 100%;
-            height: 6px;
-            background: rgba(255, 255, 255, 0.1);
-            border-radius: 3px;
-            overflow: hidden;
-        }
-
-        .progress-fill {
-            height: 100%;
-            background: linear-gradient(90deg, #ff6b6b, #ff8c8c);
-            width: ${(currentBalance / 100) * 100}%;
-        }
-
-        /* 预测分析 */
-        .forecast {
-            background: rgba(15, 23, 42, 0.6);
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            border-radius: 15px;
-            padding: 25px;
-        }
-
-        .forecast-title {
-            font-size: 16px;
-            font-weight: bold;
-            margin-bottom: 25px;
-        }
-
-        .forecast-content {
-            display: grid;
-            grid-template-columns: 1fr 1fr 1fr;
-            gap: 30px;
-        }
-
-        .forecast-item {
-            display: flex;
-            flex-direction: column;
-        }
-
-        .forecast-label {
-            font-size: 12px;
-            color: #888;
-            margin-bottom: 8px;
-        }
-
-        .forecast-value {
-            font-size: 28px;
-            font-weight: bold;
-        }
-
-        .forecast-warn {
-            color: #fbbf24;
-        }
-
-        .forecast-normal {
-            color: #fbbf24;
-        }
-
-        .forecast-alert {
-            color: #f97316;
-        }
-
-        @media (max-width: 768px) {
-            .key-metrics, .cards-row, .balance-content, .forecast-content {
-                grid-template-columns: 1fr;
-            }
-
-            .metric-value {
-                font-size: 36px;
-            }
-        }
+        ${getElectricityPageStyles(config)}
     </style>
 </head>
 <body>
-    <!-- 顶部标题 -->
-    <div class="header">
-        <div class="header-title">
-            <div class="dot"></div>
-            电费概览
-        </div>
-        <div class="date-badge">${new Date().getFullYear()}年${new Date().getMonth() + 1}月${new Date().getDate()}日</div>
-    </div>
+    <main class="page">
+        <header class="top-bar">
+            <div>
+                <div class="eyebrow">当前日期</div>
+                <h1>电费概览</h1>
+            </div>
+            <div class="date-chip">${currentDate}</div>
+        </header>
 
-    <!-- 关键指标 -->
-    <div class="key-metrics">
-        <div class="metric-item">
-            <div class="metric-label">
-                <div class="metric-dot"></div>
-                预计可用天数
+        <section class="balance-panel">
+            <div class="section-heading">
+                <span>账户余额</span>
+                <span class="status-chip ${balanceIsLow ? 'warning' : 'normal'}">${balanceStatus}</span>
             </div>
-            <div class="metric-value value-yellow">${estimatedDays}<span style="font-size: 28px;">天</span></div>
-            <div class="metric-desc">
-                <span class="warning-icon">⚠</span>
-                ${estimatedDays < 7 ? '需要充值' : '正常使用'}
-            </div>
-        </div>
+            <div class="balance-amount">¥ ${currentBalance.toFixed(2)}</div>
+            <div class="balance-meta">预警阈值 ¥ ${config.warningBalance.toFixed(2)}</div>
+        </section>
 
-        <div class="metric-item">
-            <div class="metric-label">
-                <div class="metric-dot"></div>
-                本月剩余天数
-            </div>
-            <div class="metric-value value-cyan">${remainingDaysInMonth}<span style="font-size: 28px;">天</span></div>
-            <div class="metric-desc">第 ${now.getDate()} 天 / 共 ${daysInMonth} 天</div>
-        </div>
-
-        <div class="metric-item">
-            <div class="metric-label">
-                <div class="metric-dot"></div>
-                近两周日均
-            </div>
-            <div class="metric-value value-purple">${dailyAverage.toFixed(1)}<span style="font-size: 28px;">度</span></div>
-            <div class="metric-desc">
-                <span class="status-icon">✓</span>
-                正常使用
-            </div>
-        </div>
-    </div>
-
-    <!-- 昨日用电 和 本月累计 -->
-    <div class="cards-row">
-        <div class="card">
-            <div class="card-title">
-                <div class="card-dot card-dot-cyan"></div>
-                昨日用电
-            </div>
-            <div class="card-content">
-                <div class="card-stat">
-                    <div class="stat-label">用电量</div>
-                    <div class="stat-value value-cyan">${(yesterdayUsage / 0.57).toFixed(2)}<span style="font-size: 18px;"> 度</span></div>
+        <section class="metric-grid">
+            <article class="metric-card">
+                <div class="metric-label">昨日用电</div>
+                <div class="metric-value">${yesterdayElectricity.toFixed(2)}<span class="unit">度</span></div>
+                <div class="metric-support">
+                    <span>电费</span>
+                    <span class="support-value">¥ ${yesterdayCost.toFixed(2)}</span>
                 </div>
-                <div class="card-stat">
-                    <div class="stat-label">电费</div>
-                    <div class="stat-value value-cyan">¥ ${yesterdayUsage.toFixed(2)}</div>
-                </div>
-            </div>
-        </div>
+            </article>
 
-        <div class="card">
-            <div class="card-title">
-                <div class="card-dot card-dot-pink"></div>
-                本月累计
-            </div>
-            <div class="card-content">
-                <div class="card-stat">
-                    <div class="stat-label">用电量</div>
-                    <div class="stat-value value-pink">${(monthlyTotal / 0.57).toFixed(2)}<span style="font-size: 18px;"> 度</span></div>
+            <article class="metric-card tertiary">
+                <div class="metric-label">本月累计</div>
+                <div class="metric-value">${monthlyElectricity.toFixed(2)}<span class="unit">度</span></div>
+                <div class="metric-support">
+                    <span>电费</span>
+                    <span class="support-value">¥ ${monthlyCost.toFixed(2)}</span>
                 </div>
-                <div class="card-stat">
-                    <div class="stat-label">电费</div>
-                    <div class="stat-value value-pink">¥ ${monthlyTotal.toFixed(2)}</div>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- 账户余额 -->
-    <div class="balance-card">
-        <div class="balance-header">
-            <div class="balance-title">账户余额</div>
-            <div class="${currentBalance >= 50 ? 'balance-normal' : 'balance-warning'}">${balanceStatus}</div>
-        </div>
-        <div class="balance-content">
-            <div class="balance-stat">
-                <div class="balance-label">剩余电量</div>
-                <div class="balance-value">${remainingElectricity}<span style="font-size: 20px;"> 度</span></div>
-                <div class="progress-bar">
-                    <div class="progress-fill"></div>
-                </div>
-            </div>
-            <div class="balance-stat">
-                <div class="balance-label">剩余金额</div>
-                <div class="balance-value">¥ ${currentBalance.toFixed(2)}</div>
-            </div>
-        </div>
-    </div>
-
-    <!-- 预测分析 -->
-    <div class="forecast">
-        <div class="forecast-title">预测分析</div>
-        <div class="forecast-content">
-            <div class="forecast-item">
-                <div class="forecast-label">预计月耗</div>
-                <div class="forecast-value forecast-normal">${estimatedMonthlyUsage.toFixed(1)}<span style="font-size: 16px;"> 度</span></div>
-            </div>
-            <div class="forecast-item">
-                <div class="forecast-label">本月预测</div>
-                <div class="forecast-value forecast-alert">${estimatedMonthlyUsage > 100 ? '可能超出' : '正常范围'}</div>
-            </div>
-        </div>
-    </div>
+            </article>
+        </section>
+    </main>
 </body>
 </html>
-  `;
+  `
 
-  return html;
+  return html
 }
 
 /**
  * 生成电费历史 HTML
  */
 async function generateElectricityHistoryHTML(personNo: string, config: PluginConfig): Promise<string> {
-  const history = await getElectricityHistory(personNo, config);
-  const data = await getElectricityData(personNo, config);
+  const history = await getElectricityHistory(personNo, config)
+  const data = await getElectricityData(personNo, config)
 
   const totalConsumption = history.reduce((total: number, record: any) => {
-    return total + parseFloat(record.dealMoney || 0);
-  }, 0);
+    return total + (parseFloat(record.dealMoney || 0) || 0)
+  }, 0)
 
   const totalElectricity = history.reduce((total: number, record: any) => {
-    return total + (parseFloat(record.dealMoney || 0) / 0.57);
-  }, 0);
+    return total + (parseFloat(record.dealMoney || 0) || 0) / ELECTRICITY_UNIT_PRICE
+  }, 0)
 
-  const dailyAverage = totalConsumption / (history.length || 1);
-  const currentBalance = parseFloat(data.personInfo.roomBalance);
+  const currentBalance = Math.abs(parseFloat(data.personInfo.roomBalance) || 0)
+  const currentDate = formatCurrentDate()
+  const historyCountText = history.length > 0 ? `最近 ${history.length} 天` : '暂无记录'
 
-  let tableRows = '';
-  history.forEach((record: any) => {
-    const { date, dayOfWeek } = formatDate(record.dealTime);
-    const cost = parseFloat(record.dealMoney || 0).toFixed(2);
-    const electricity = (parseFloat(record.dealMoney || 0) / 0.57).toFixed(2);
+  const tableRows =
+    history.length > 0
+      ? history
+          .map((record: any) => {
+            const { date, dayOfWeek } = formatDate(record.dealTime)
+            const cost = parseFloat(record.dealMoney || 0) || 0
+            const electricity = cost / ELECTRICITY_UNIT_PRICE
 
-    tableRows += `
+            return `
       <tr>
         <td class="date-cell">${date} ${dayOfWeek}</td>
-        <td class="cost-cell">消耗 ${electricity} 度</td>
-        <td class="cost-cell">¥${cost}</td>
+        <td class="cost-cell">${electricity.toFixed(2)} 度</td>
+        <td class="cost-cell">¥ ${cost.toFixed(2)}</td>
       </tr>
-    `;
-  });
+    `
+          })
+          .join('')
+      : `
+      <tr>
+        <td class="empty-cell" colspan="3">暂无历史记录</td>
+      </tr>
+    `
 
   const html = `
 <!DOCTYPE html>
@@ -1122,189 +952,46 @@ async function generateElectricityHistoryHTML(personNo: string, config: PluginCo
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>电费历史</title>
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
-        body {
-            background: linear-gradient(135deg, #0f1419 0%, #1a1f2e 100%);
-            color: #fff;
-            font-family: "汉仪文黑-85W", "HYWenHei-85W", "汉仪文黑", "HYWenHei", "Microsoft YaHei", "SimHei", "PingFang SC", "Noto Sans SC", -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            padding: 20px;
-            min-height: 100vh;
-        }
-
-        /* 顶部标题栏 */
-        .header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 30px;
-        }
-
-        .header-title {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            font-size: 28px;
-            font-weight: bold;
-        }
-
-        .dot {
-            width: 12px;
-            height: 12px;
-            background: #00d4ff;
-            border-radius: 50%;
-        }
-
-        .date-badge {
-            background: rgba(255, 255, 255, 0.1);
-            border: 1px solid rgba(255, 255, 255, 0.2);
-            padding: 10px 20px;
-            border-radius: 25px;
-            font-size: 14px;
-            backdrop-filter: blur(10px);
-        }
-
-        /* 统计卡片 */
-        .stats-grid {
-            display: grid;
-            grid-template-columns: repeat(4, 1fr);
-            gap: 15px;
-            margin-bottom: 20px;
-        }
-
-        .stat-card {
-            background: rgba(15, 23, 42, 0.6);
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            border-radius: 15px;
-            padding: 20px;
-            text-align: center;
-        }
-
-        .stat-label {
-            font-size: 12px;
-            color: #888;
-            margin-bottom: 8px;
-        }
-
-        .stat-value {
-            font-size: 24px;
-            font-weight: bold;
-            color: #fbbf24;
-        }
-
-        /* 历史表格 */
-        .history-section {
-            background: rgba(15, 23, 42, 0.6);
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            border-radius: 15px;
-            padding: 25px;
-            margin-bottom: 20px;
-        }
-
-        .section-title {
-            font-size: 16px;
-            font-weight: bold;
-            margin-bottom: 20px;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-
-        .section-dot {
-            width: 10px;
-            height: 10px;
-            background: #06b6d4;
-            border-radius: 50%;
-        }
-
-        .history-table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 14px;
-        }
-
-        .history-table th {
-            text-align: left;
-            padding: 12px 15px;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-            color: #888;
-            font-weight: 500;
-        }
-
-        .history-table td {
-            padding: 12px 15px;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-        }
-
-        .history-table tr:last-child td {
-            border-bottom: none;
-        }
-
-        .date-cell {
-            font-weight: 500;
-            width: 35%;
-        }
-
-        .cost-cell {
-            text-align: right;
-            font-weight: 500;
-            width: 32.5%;
-        }
-
-        .footer {
-            text-align: center;
-            margin-top: 20px;
-            font-size: 13px;
-            color: #666;
-        }
-
-        @media (max-width: 768px) {
-            .stats-grid {
-                grid-template-columns: repeat(2, 1fr);
-            }
-        }
+        ${getElectricityPageStyles(config)}
     </style>
 </head>
 <body>
-    <!-- 顶部标题 -->
-    <div class="header">
-        <div class="header-title">
-            <div class="dot"></div>
-            电费历史
-        </div>
-        <div class="date-badge">${new Date().getFullYear()}年${new Date().getMonth() + 1}月${new Date().getDate()}日</div>
-    </div>
+    <main class="page">
+        <header class="top-bar">
+            <div>
+                <div class="eyebrow">当前日期</div>
+                <h1>电费历史</h1>
+            </div>
+            <div class="date-chip">${currentDate}</div>
+        </header>
 
-    <!-- 统计信息 -->
-    <div class="stats-grid">
-        <div class="stat-card">
-            <div class="stat-label">记录天数</div>
-            <div class="stat-value">${history.length}</div>
-        </div>
-        <div class="stat-card">
-            <div class="stat-label">总用电量</div>
-            <div class="stat-value">${totalElectricity.toFixed(2)}度</div>
-        </div>
-        <div class="stat-card">
-            <div class="stat-label">总费用</div>
-            <div class="stat-value">¥${totalConsumption.toFixed(2)}</div>
-        </div>
-        <div class="stat-card">
-            <div class="stat-label">日均费用</div>
-            <div class="stat-value">¥${dailyAverage.toFixed(2)}</div>
-        </div>
-    </div>
+        <section class="metric-grid history-summary">
+            <article class="metric-card">
+                <div class="metric-label">账户余额</div>
+                <div class="metric-value compact">¥ ${currentBalance.toFixed(2)}</div>
+            </article>
 
-    <!-- 历史记录 -->
-    <div class="history-section">
-        <div class="section-title">
-            <div class="section-dot"></div>
-            近期用电记录
-        </div>
+            <article class="metric-card neutral">
+                <div class="metric-label">记录天数</div>
+                <div class="metric-value compact">${history.length}<span class="unit">天</span></div>
+            </article>
+
+            <article class="metric-card">
+                <div class="metric-label">总用电量</div>
+                <div class="metric-value compact">${totalElectricity.toFixed(2)}<span class="unit">度</span></div>
+            </article>
+
+            <article class="metric-card tertiary">
+                <div class="metric-label">总费用</div>
+                <div class="metric-value compact">¥ ${totalConsumption.toFixed(2)}</div>
+            </article>
+        </section>
+
+        <section class="history-section">
+            <div class="section-heading">
+                <span>近期用电记录</span>
+                <span class="section-subtitle">${historyCountText}</span>
+            </div>
         <div class="table-container">
             <table class="history-table">
                 <thead>
@@ -1319,16 +1006,13 @@ async function generateElectricityHistoryHTML(personNo: string, config: PluginCo
                 </tbody>
             </table>
         </div>
-    </div>
-
-    <div class="footer">
-        最近 ${history.length} 天用电记录
-    </div>
+        </section>
+    </main>
 </body>
 </html>
-  `;
+  `
 
-  return html;
+  return html
 }
 
 export default definePlugin({
@@ -1349,8 +1033,7 @@ export default definePlugin({
         maxHistoryDays: 30,
         contentWidth: 800,
         padding: 40,
-        browserPath: '/usr/bin/chromium',
-        apiBaseUrl: 'https://mobiles.znmdhq.com/api/room/mobile'
+        apiBaseUrl: 'https://mobiles.znmdhq.com/api/room/mobile',
       }
 
       if (!existsSync(configPath)) {
@@ -1369,7 +1052,7 @@ export default definePlugin({
     const loadData = (): PluginData => {
       const defaultData: PluginData = {
         bindings: {},
-        warningState: {}
+        warningState: {},
       }
 
       if (!existsSync(dataPath)) {
@@ -1394,15 +1077,15 @@ export default definePlugin({
     }
 
     // 初始化临时目录
-    const tempDir = join(pluginDir, 'temp');
+    const tempDir = join(pluginDir, 'temp')
     if (!existsSync(tempDir)) {
-      mkdirSync(tempDir, { recursive: true });
+      mkdirSync(tempDir, { recursive: true })
     }
 
     function clearWarningCycleState(warningState: Record<string, WarningStateRecord>, userId: string) {
-      if (!(userId in warningState)) return false;
-      delete warningState[userId];
-      return true;
+      if (!(userId in warningState)) return false
+      delete warningState[userId]
+      return true
     }
 
     // 检查余额并主动私聊预警
@@ -1411,33 +1094,33 @@ export default definePlugin({
       if (!config.enabled) return
 
       try {
-        const data = loadData();
-        const entries = Object.entries(data.bindings);
-        let changed = false;
+        const data = loadData()
+        const entries = Object.entries(data.bindings)
+        let changed = false
 
         for (const [userId, personNo] of entries) {
           try {
-            const elecData = await getElectricityData(personNo, config);
-            const currentBalance = Math.abs(parseFloat(elecData.personInfo.roomBalance));
-            const currentState = data.warningState[userId];
+            const elecData = await getElectricityData(personNo, config)
+            const currentBalance = Math.abs(parseFloat(elecData.personInfo.roomBalance))
+            const currentState = data.warningState[userId]
 
             if (currentBalance >= config.warningBalance) {
-              changed = clearWarningCycleState(data.warningState, userId) || changed;
-              continue;
+              changed = clearWarningCycleState(data.warningState, userId) || changed
+              continue
             }
 
             if (!currentState) {
               data.warningState[userId] = {
                 mutedUntilRecover: false,
                 lastKnownBalance: currentBalance,
-              };
-              changed = true;
+              }
+              changed = true
             } else if (currentState.lastKnownBalance !== currentBalance) {
-              currentState.lastKnownBalance = currentBalance;
-              changed = true;
+              currentState.lastKnownBalance = currentBalance
+              changed = true
             }
 
-            if (data.warningState[userId]?.mutedUntilRecover) continue;
+            if (data.warningState[userId]?.mutedUntilRecover) continue
 
             const warningMessage =
               `⚠️ 电费余额不足提醒\n` +
@@ -1445,206 +1128,196 @@ export default definePlugin({
               `预警阈值：${config.warningBalance} 元\n` +
               `学号：${personNo}\n` +
               `请及时充值，避免影响正常用电。\n` +
-              `回复T退订（本次欠费不再提醒）`;
+              `回复T退订（本次欠费不再提醒）`
 
-            await ctx.bot.sendPrivateMsg(Number(userId), [ctx.segment.text(warningMessage)]);
+            await ctx.bot.sendPrivateMsg(Number(userId), [ctx.segment.text(warningMessage)])
             data.warningState[userId] = {
               mutedUntilRecover: false,
               lastKnownBalance: currentBalance,
               lastWarningAt: new Date().toISOString(),
-            };
-            changed = true;
-            await new Promise((resolve) => setTimeout(resolve, 100));
+            }
+            changed = true
+            await new Promise((resolve) => setTimeout(resolve, 100))
           } catch (err) {
-            ctx.logger.warn(`[电费] 私聊预警发送失败 user=${userId}, personNo=${personNo}: ${err}`);
+            ctx.logger.warn(`[电费] 私聊预警发送失败 user=${userId}, personNo=${personNo}: ${err}`)
           }
         }
 
         if (changed) {
-          saveData(data);
+          saveData(data)
         }
       } catch (error) {
-        ctx.logger.warn(`[电费] 余额检查失败: ${error}`);
+        ctx.logger.warn(`[电费] 余额检查失败: ${error}`)
       }
     }
 
     async function handleWarningUnsubscribe(e: any, config: PluginConfig) {
-      const text = ctx.text(e).trim();
-      if (!isUnsubscribeCommand(text)) return false;
+      const text = ctx.text(e).trim()
+      if (!isUnsubscribeCommand(text)) return false
 
-      const userId = getEventUserId(e);
+      const userId = getEventUserId(e)
       if (!userId) {
-        await e.reply('无法识别你的 QQ 号，请稍后再试。');
-        return true;
+        await e.reply('无法识别你的 QQ 号，请稍后再试。')
+        return true
       }
 
-      const data = loadData();
-      const personNo = data.bindings[userId];
+      const data = loadData()
+      const personNo = data.bindings[userId]
       if (!personNo) {
-        await e.reply('你还没有绑定学号，请先发送：#电费 绑定 202xxxxxxxxx');
-        return true;
+        await e.reply('你还没有绑定学号，请先发送：#电费 绑定 202xxxxxxxxx')
+        return true
       }
 
       if (!data.warningState[userId]) {
-        await e.reply('当前没有可退订的欠费提醒。');
-        return true;
+        await e.reply('当前没有可退订的欠费提醒。')
+        return true
       }
 
       try {
-        const elecData = await getElectricityData(personNo, config);
-        const currentBalance = Math.abs(parseFloat(elecData.personInfo.roomBalance));
+        const elecData = await getElectricityData(personNo, config)
+        const currentBalance = Math.abs(parseFloat(elecData.personInfo.roomBalance))
 
         if (currentBalance >= config.warningBalance) {
-          clearWarningCycleState(data.warningState, userId);
-          saveData(data);
-          await e.reply('当前余额已恢复，无需退订。');
-          return true;
+          clearWarningCycleState(data.warningState, userId)
+          saveData(data)
+          await e.reply('当前余额已恢复，无需退订。')
+          return true
         }
 
         data.warningState[userId] = {
           ...data.warningState[userId],
           mutedUntilRecover: true,
           lastKnownBalance: currentBalance,
-        };
-        saveData(data);
-        await e.reply('已为你退订本次欠费提醒，待余额恢复后下次欠费会重新提醒。');
+        }
+        saveData(data)
+        await e.reply('已为你退订本次欠费提醒，待余额恢复后下次欠费会重新提醒。')
       } catch (error) {
-        await e.reply(`处理退订失败：${error instanceof Error ? error.message : '未知错误'}`);
+        await e.reply(`处理退订失败：${error instanceof Error ? error.message : '未知错误'}`)
       }
 
-      return true;
+      return true
     }
 
     async function handleElectricityMessage(e: any, config: PluginConfig) {
-      const text = ctx.text(e).trim();
-      if (!text.startsWith('#电费')) return;
+      const text = ctx.text(e).trim()
+      if (!text.startsWith('#电费')) return
 
-      const userId = getEventUserId(e);
+      const userId = getEventUserId(e)
       if (!userId) {
-        await e.reply('无法识别你的 QQ 号，请稍后再试。');
-        return;
+        await e.reply('无法识别你的 QQ 号，请稍后再试。')
+        return
       }
 
-      const data = loadData();
-      const parts = text.split(/\s+/).filter(Boolean);
-      const subCommand = parts[1];
+      const data = loadData()
+      const parts = text.split(/\s+/).filter(Boolean)
+      const subCommand = parts[1]
 
       if (subCommand === '绑定') {
-        const personNo = parts[2] ?? '';
+        const personNo = parts[2] ?? ''
         if (!STUDENT_ID_REGEX.test(personNo)) {
-          await e.reply('格式错误，请使用：#电费 绑定 202xxxxxxxxx');
-          return;
+          await e.reply('格式错误，请使用：#电费 绑定 202xxxxxxxxx')
+          return
         }
 
-        data.bindings[userId] = personNo;
-        saveData(data);
-        await e.reply(`绑定成功，QQ ${userId} -> 学号 ${personNo}`);
-        return;
+        data.bindings[userId] = personNo
+        saveData(data)
+        await e.reply(`绑定成功，QQ ${userId} -> 学号 ${personNo}`)
+        return
       }
 
-      const personNo = data.bindings[userId];
+      const personNo = data.bindings[userId]
       if (!personNo) {
-        await e.reply('你还没有绑定学号，请先发送：#电费 绑定 202xxxxxxxxx');
-        return;
+        await e.reply('你还没有绑定学号，请先发送：#电费 绑定 202xxxxxxxxx')
+        return
       }
 
       if (!subCommand) {
-        const thinking = await e.reply('正在查询电费信息，请稍候...');
-        let imagePath: string | null = null;
-        try {
-          const html = await generateElectricityStatusHTML(personNo, config);
-          imagePath = await renderHTMLToImage(html, config);
-          await e.reply(ctx.segment.image(imagePath));
-        } catch (error) {
-          await e.reply(`查询失败：${error instanceof Error ? error.message : '未知错误'}`);
-        } finally {
-          if (imagePath) {
-            const fileToDelete = imagePath;
-            const timer = setTimeout(() => {
-              try {
-                if (existsSync(fileToDelete)) unlink(fileToDelete, () => {});
-              } catch {}
-            }, 15000);
-            ctx.clears.add(() => clearTimeout(timer));
+        await runWithReaction(e, async () => {
+          let imagePath: string | null = null
+          try {
+            const html = await generateElectricityStatusHTML(personNo, config)
+            imagePath = await renderHTMLToImage(html, config)
+            await e.reply(ctx.segment.image(imagePath))
+          } catch (error) {
+            await e.reply(`查询失败：${error instanceof Error ? error.message : '未知错误'}`)
+          } finally {
+            if (imagePath) {
+              const fileToDelete = imagePath
+              const timer = setTimeout(() => {
+                try {
+                  if (existsSync(fileToDelete)) unlink(fileToDelete, () => {})
+                } catch {}
+              }, 15000)
+              ctx.clears.add(() => clearTimeout(timer))
+            }
           }
-          if (thinking?.message_id) {
-            try {
-              await ctx.bot.recallMsg(thinking.message_id);
-            } catch {}
-          }
-        }
-        return;
+        })
+        return
       }
 
       if (subCommand === '历史') {
-        const thinking = await e.reply('正在查询电费历史，请稍候...');
-        let imagePath: string | null = null;
-        try {
-          const html = await generateElectricityHistoryHTML(personNo, config);
-          imagePath = await renderHTMLToImage(html, config);
-          await e.reply(ctx.segment.image(imagePath));
-        } catch (error) {
-          await e.reply(`查询失败：${error instanceof Error ? error.message : '未知错误'}`);
-        } finally {
-          if (imagePath) {
-            const fileToDelete = imagePath;
-            const timer = setTimeout(() => {
-              try {
-                if (existsSync(fileToDelete)) unlink(fileToDelete, () => {});
-              } catch {}
-            }, 15000);
-            ctx.clears.add(() => clearTimeout(timer));
+        await runWithReaction(e, async () => {
+          let imagePath: string | null = null
+          try {
+            const html = await generateElectricityHistoryHTML(personNo, config)
+            imagePath = await renderHTMLToImage(html, config)
+            await e.reply(ctx.segment.image(imagePath))
+          } catch (error) {
+            await e.reply(`查询失败：${error instanceof Error ? error.message : '未知错误'}`)
+          } finally {
+            if (imagePath) {
+              const fileToDelete = imagePath
+              const timer = setTimeout(() => {
+                try {
+                  if (existsSync(fileToDelete)) unlink(fileToDelete, () => {})
+                } catch {}
+              }, 15000)
+              ctx.clears.add(() => clearTimeout(timer))
+            }
           }
-          if (thinking?.message_id) {
-            try {
-              await ctx.bot.recallMsg(thinking.message_id);
-            } catch {}
-          }
-        }
-        return;
+        })
+        return
       }
 
-      await e.reply('支持的命令：#电费 / #电费 历史 / #电费 绑定 202xxxxxxxxx');
+      await e.reply('支持的命令：#电费 / #电费 历史 / #电费 绑定 202xxxxxxxxx')
     }
 
     ctx.handle('message.group', async (e) => {
       const config = loadConfig()
       if (!config.enabled) return
-      if ('group_id' in e && config.whitelist.length > 0 && !config.whitelist.includes(e.group_id)) return;
-      await handleElectricityMessage(e, config);
-    });
+      if ('group_id' in e && config.whitelist.length > 0 && !config.whitelist.includes(e.group_id)) return
+      await handleElectricityMessage(e, config)
+    })
 
     ctx.handle('message.private', async (e) => {
       const config = loadConfig()
       if (!config.enabled) return
-      if (await handleWarningUnsubscribe(e, config)) return;
-      await handleElectricityMessage(e, config);
-    });
+      if (await handleWarningUnsubscribe(e, config)) return
+      await handleElectricityMessage(e, config)
+    })
 
     // 每天检查余额（早上 9 点执行）
     ctx.cron('0 9 * * *', async () => {
-      await checkBalanceAndWarn();
-    });
+      await checkBalanceAndWarn()
+    })
 
     // 进程退出清理
     const cleanup = async () => {
-      const tempDir = join(pluginDir, 'temp');
+      const tempDir = join(pluginDir, 'temp')
       if (existsSync(tempDir)) {
-        console.log('清理临时文件夹...');
-        readdirSync(tempDir).forEach(file => {
+        console.log('清理临时文件夹...')
+        readdirSync(tempDir).forEach((file) => {
           try {
-            unlinkSync(join(tempDir, file));
+            unlinkSync(join(tempDir, file))
           } catch (err) {
-            console.error(`删除临时文件失败 ${file}:`, err);
+            console.error(`删除临时文件失败 ${file}:`, err)
           }
-        });
+        })
       }
-    
-      await closeBrowserInstance();
-    };
+    }
 
     return async () => {
-        await cleanup();
+      await cleanup()
     }
-  }
-});
+  },
+})

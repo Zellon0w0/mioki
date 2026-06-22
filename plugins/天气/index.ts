@@ -6,6 +6,24 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { randomUUID } from 'node:crypto'
 
+async function runWithReaction<T>(event: any, task: () => Promise<T>, id = '60'): Promise<T> {
+  let reacted = false
+  if (typeof event?.addReaction === 'function') {
+    try {
+      await event.addReaction(id)
+      reacted = true
+    } catch {}
+  }
+
+  try {
+    return await task()
+  } finally {
+    if (reacted && typeof event?.delReaction === 'function') {
+      await event.delReaction(id).catch(() => {})
+    }
+  }
+}
+
 setDefaultResultOrder('ipv4first')
 
 const __filename = fileURLToPath(import.meta.url)
@@ -389,6 +407,17 @@ export default definePlugin({
       const text = ctx.text(event).trim()
       if (!text) return
 
+      const runWeatherTask = (task: () => Promise<void>) =>
+        runWithReaction(event, async () => {
+          try {
+            await task()
+          } catch (error) {
+            const message = ctx.stringifyError(error)
+            ctx.logger.warn(`天气查询失败：${message}`)
+            await event.reply(`天气获取失败：${message}`)
+          }
+        })
+
       await ctx.runWithErrorHandler(
         async () => {
           if (text === '天气' || text === '天气 帮助' || text === '天气帮助') {
@@ -404,7 +433,7 @@ export default definePlugin({
               return
             }
 
-            await queryAndSend(event.group_id, primary.query)
+            await runWeatherTask(() => queryAndSend(event.group_id, primary.query))
             return
           }
 
@@ -436,40 +465,42 @@ export default definePlugin({
                 return
               }
 
-              const bundle = await fetchWeatherBundle(value)
-              const location = bundle.location
-              const displayName = formatLocationName(location, value)
-              const group = ensureGroupConfig(event.group_id)
-              const exists = group.locations.find((item) => {
-                return item.query === value || item.displayName === displayName
+              await runWeatherTask(async () => {
+                const bundle = await fetchWeatherBundle(value)
+                const location = bundle.location
+                const displayName = formatLocationName(location, value)
+                const group = ensureGroupConfig(event.group_id)
+                const exists = group.locations.find((item) => {
+                  return item.query === value || item.displayName === displayName
+                })
+
+                if (exists) {
+                  await event.reply(`本群已添加过 ${exists.displayName}。`, true)
+                  return
+                }
+
+                const saved: WeatherLocation = {
+                  id: randomUUID(),
+                  query: value,
+                  displayName,
+                  province: location.province,
+                  city: location.city,
+                  county: location.county,
+                  createdAt: Date.now(),
+                  createdBy: event.user_id,
+                }
+
+                group.locations.push(saved)
+                if (!group.primaryId) {
+                  group.primaryId = saved.id
+                }
+
+                saveConfig(pluginConfig)
+                await event.reply(
+                  `已添加天气地址：${saved.displayName}${group.primaryId === saved.id ? '\n已自动设为主地址。' : ''}`,
+                  true,
+                )
               })
-
-              if (exists) {
-                await event.reply(`本群已添加过 ${exists.displayName}。`, true)
-                return
-              }
-
-              const saved: WeatherLocation = {
-                id: randomUUID(),
-                query: value,
-                displayName,
-                province: location.province,
-                city: location.city,
-                county: location.county,
-                createdAt: Date.now(),
-                createdBy: event.user_id,
-              }
-
-              group.locations.push(saved)
-              if (!group.primaryId) {
-                group.primaryId = saved.id
-              }
-
-              saveConfig(pluginConfig)
-              await event.reply(
-                `已添加天气地址：${saved.displayName}${group.primaryId === saved.id ? '\n已自动设为主地址。' : ''}`,
-                true,
-              )
               return
             }
 
@@ -537,7 +568,7 @@ export default definePlugin({
           if (directMatch?.[1]) {
             const query = directMatch[1].trim()
             if (!query) return
-            await queryAndSend(event.group_id, query)
+            await runWeatherTask(() => queryAndSend(event.group_id, query))
           }
         },
         event,
@@ -694,7 +725,8 @@ async function fetchJson<T>(url: string): Promise<T> {
 
     const code = Number(json.code)
     if (Number.isFinite(code) && code !== 200 && code !== 0) {
-      const dataError = json.data && typeof json.data === 'object' ? (json.data as any).error || (json.data as any).message : null
+      const dataError =
+        json.data && typeof json.data === 'object' ? (json.data as any).error || (json.data as any).message : null
       throw new Error(dataError || json.message || `接口返回 code=${json.code}`)
     }
 
@@ -774,13 +806,19 @@ function buildSpecialWeatherReminder(bundle: WeatherBundle, fallbackName?: strin
 
   const locationName = fallbackName || formatLocationName(bundle.location, bundle.query)
   const detail = matched
-    .map((hour) => `${formatHour(getHourlyTime(hour))} ${getHourlyText(hour)} ${formatTemperature(getHourlyTemp(hour))}`)
+    .map(
+      (hour) => `${formatHour(getHourlyTime(hour))} ${getHourlyText(hour)} ${formatTemperature(getHourlyTemp(hour))}`,
+    )
     .join('，')
 
   return `${locationName} 未来 3 小时可能出现特殊天气：${detail}。请留意出行安全。`
 }
 
-function buildCoolingReminder(bundle: WeatherBundle, groupId: number, location: WeatherLocation): CoolingReminder | null {
+function buildCoolingReminder(
+  bundle: WeatherBundle,
+  groupId: number,
+  location: WeatherLocation,
+): CoolingReminder | null {
   const { today, tomorrow } = getTodayAndTomorrowForecast(bundle.forecast.daily_forecast || [])
   if (!today || !tomorrow) return null
 
@@ -930,7 +968,8 @@ async function getImageDataUri(url: string): Promise<string> {
 
 function getSunriseSunset(bundle: WeatherBundle): { sunrise?: string; sunset?: string } {
   const today = getChinaDate()
-  const item = bundle.forecast.sunrise_sunset?.find((entry) => entry.date === today) || bundle.forecast.sunrise_sunset?.[0]
+  const item =
+    bundle.forecast.sunrise_sunset?.find((entry) => entry.date === today) || bundle.forecast.sunrise_sunset?.[0]
   const realtimeSunrise = getRealtimeSunrise(bundle.realtime.sunrise)
 
   return {
@@ -1105,8 +1144,6 @@ function escapeXml(value: string): string {
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&apos;')
 }
-
-
 
 function loadFontFaceCss(): string {
   try {

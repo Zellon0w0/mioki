@@ -10,12 +10,6 @@
       "default": true,
       "description": "是否启用完美查询插件"
     },
-    "browserPath": {
-      "title": "Chromium 路径",
-      "type": "string",
-      "default": "/usr/bin/chromium",
-      "description": "Puppeteer 使用 de Chromium/Chrome 可执行文件路径"
-    },
     "userAgent": {
       "title": "User-Agent",
       "type": "string",
@@ -47,5 +41,8 @@
       "description": "允许响应该命令的 QQ 群号，每行一个"
     }
   },
-  "required": ["browserPath", "token", "mySteamId"]
+  "required": [
+    "token",
+    "mySteamId"
+  ]
 }

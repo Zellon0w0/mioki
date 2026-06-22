@@ -17,13 +17,10 @@
         "type": "integer"
       },
       "description": "允许使用本插件的 QQ 群号，留空代表不限制，每行一个"
-    },
-    "browserPath": {
-      "title": "Chromium 路径",
-      "type": "string",
-      "default": "/usr/bin/chromium",
-      "description": "Puppeteer 调用的 Chromium/Chrome 可执行文件路径"
     }
   },
-  "required": ["enabled", "whitelist", "browserPath"]
+  "required": [
+    "enabled",
+    "whitelist"
+  ]
 }

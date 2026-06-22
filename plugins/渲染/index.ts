@@ -1,7 +1,25 @@
 import { definePlugin, getAbsPluginDir } from 'mioki'
-import puppeteer, { Browser } from 'puppeteer-core'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { sharedBrowser } from '../_shared/resource'
+
+async function runWithReaction<T>(event: any, task: () => Promise<T>, id = '60'): Promise<T> {
+  let reacted = false
+  if (typeof event?.addReaction === 'function') {
+    try {
+      await event.addReaction(id)
+      reacted = true
+    } catch {}
+  }
+
+  try {
+    return await task()
+  } finally {
+    if (reacted && typeof event?.delReaction === 'function') {
+      await event.delReaction(id).catch(() => {})
+    }
+  }
+}
 
 const PLUGIN_NAME = '渲染'
 const PLUGIN_VERSION = '1.0.0'
@@ -12,77 +30,6 @@ interface PluginConfig {
   defaultTheme: 'vscode-dark' | 'vscode-light' | 'one-dark' | 'dracula' | 'github-light' | 'nord' | 'monokai'
   whitelist: number[]
   keywords: string[]
-}
-
-let browser: Browser | null = null
-let browserLaunchPromise: Promise<Browser> | null = null
-
-function getChromeCandidates(): string[] {
-  const localAppData = process.env.LOCALAPPDATA
-  const programFiles = process.env.PROGRAMFILES
-  const programFilesX86 = process.env['PROGRAMFILES(X86)']
-
-  return [
-    process.env.PUPPETEER_EXECUTABLE_PATH,
-    process.env.CHROME_PATH,
-    '/usr/bin/chromium',
-    '/usr/bin/chromium-browser',
-    '/usr/bin/google-chrome',
-    '/usr/bin/google-chrome-stable',
-    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-    programFiles ? join(programFiles, 'Google/Chrome/Application/chrome.exe') : '',
-    programFilesX86 ? join(programFilesX86, 'Google/Chrome/Application/chrome.exe') : '',
-    localAppData ? join(localAppData, 'Google/Chrome/Application/chrome.exe') : '',
-  ].filter((candidate): candidate is string => Boolean(candidate))
-}
-
-function findChromeExecutable(): string {
-  const executablePath = getChromeCandidates().find((candidate) => existsSync(candidate))
-  if (!executablePath) {
-    throw new Error('未找到 Chrome/Chromium，请设置 PUPPETEER_EXECUTABLE_PATH 或 CHROME_PATH')
-  }
-  return executablePath
-}
-
-async function getBrowser(): Promise<Browser> {
-  if (browser && browser.connected) {
-    return browser
-  }
-  browser = null
-
-  if (!browserLaunchPromise) {
-    browserLaunchPromise = puppeteer.launch({
-      executablePath: findChromeExecutable(),
-      headless: true,
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-gpu',
-        '--no-first-run',
-        '--no-zygote',
-        '--font-render-hinting=none',
-      ],
-      defaultViewport: {
-        width: 850,
-        height: 1000,
-        deviceScaleFactor: 2,
-      },
-    }).then(b => {
-      browser = b
-      browserLaunchPromise = null
-      b.on('disconnected', () => {
-        if (browser === b) {
-          browser = null
-        }
-      })
-      return b
-    }).catch(err => {
-      browserLaunchPromise = null
-      throw err
-    })
-  }
-  return browserLaunchPromise
 }
 
 function renderHtml(text: string, mode: 'markdown' | 'editor', lang: string, theme: string): string {
@@ -131,50 +78,6 @@ function renderHtml(text: string, mode: 'markdown' | 'editor', lang: string, the
       overflow: hidden;
       display: flex;
       flex-direction: column;
-    }
-
-    /* Window Title Bar */
-    .title-bar {
-      height: 44px;
-      background: var(--title-bg);
-      display: flex;
-      align-items: center;
-      padding: 0 16px;
-      border-bottom: 1px solid var(--border-color);
-      position: relative;
-    }
-
-    .window-controls {
-      display: flex;
-      gap: 8px;
-    }
-
-    .dot {
-      width: 12px;
-      height: 12px;
-      border-radius: 50%;
-    }
-    .dot-close { background: #ff5f56; }
-    .dot-minimize { background: #ffbd2e; }
-    .dot-maximize { background: #27c93f; }
-
-    .window-title {
-      position: absolute;
-      left: 50%;
-      transform: translateX(-50%);
-      font-size: 13px;
-      color: var(--title-text);
-      font-weight: 500;
-      letter-spacing: 0.5px;
-    }
-
-    .window-lang {
-      margin-left: auto;
-      font-size: 11px;
-      color: var(--title-text);
-      opacity: 0.7;
-      text-transform: uppercase;
-      font-weight: bold;
     }
 
     /* Content Area */
@@ -370,15 +273,6 @@ function renderHtml(text: string, mode: 'markdown' | 'editor', lang: string, the
 </head>
 <body class="theme-placeholder">
   <div class="container">
-    <div class="title-bar">
-      <div class="window-controls">
-        <div class="dot dot-close"></div>
-        <div class="dot dot-minimize"></div>
-        <div class="dot dot-maximize"></div>
-      </div>
-      <div class="window-title" id="window-title-text">render.md</div>
-      <div class="window-lang" id="window-lang-text">TEXT</div>
-    </div>
     <div class="content-area" id="content-parent">
       <!-- Content injected dynamically -->
     </div>
@@ -452,24 +346,6 @@ function renderHtml(text: string, mode: 'markdown' | 'editor', lang: string, the
     prismLink.rel = 'stylesheet';
     prismLink.href = themeStylesheets[activeTheme] || themeStylesheets['one-dark'];
     document.head.appendChild(prismLink);
-
-    // Set Window Titles
-    var extMap = {
-      'javascript': 'js',
-      'typescript': 'ts',
-      'python': 'py',
-      'rust': 'rs',
-      'csharp': 'cs',
-      'c++': 'cpp',
-      'powershell': 'ps1',
-      'dockerfile': 'docker'
-    };
-    var ext = extMap[window.renderConfig.lang] || window.renderConfig.lang;
-    if (ext === 'text') ext = 'txt';
-    var filename = window.renderConfig.mode === 'markdown' ? 'preview.md' : 'editor.' + ext;
-    document.getElementById('window-title-text').textContent = filename;
-    var langUpper = window.renderConfig.lang ? window.renderConfig.lang.toUpperCase() : 'TEXT';
-    document.getElementById('window-lang-text').textContent = window.renderConfig.mode === 'markdown' ? 'PREVIEW' : langUpper;
 
     function alignLineNumbers() {
       var preElements = document.querySelectorAll('pre.line-numbers');
@@ -573,38 +449,43 @@ function renderHtml(text: string, mode: 'markdown' | 'editor', lang: string, the
 </html>`
 }
 
-async function renderImage(text: string, mode: 'markdown' | 'editor', lang: string, theme: string): Promise<Buffer | null> {
-  let page;
+async function renderImage(
+  text: string,
+  mode: 'markdown' | 'editor',
+  lang: string,
+  theme: string,
+): Promise<Buffer | null> {
   try {
-    const instance = await getBrowser()
-    page = await instance.newPage()
+    return await sharedBrowser.withPage(
+      async (page) => {
+        // Enforce viewport size. The screenshot will crop exactly to the bounding box of the .container element.
+        const html = renderHtml(text, mode, lang, theme)
 
-    // Enforce viewport size. The screenshot will crop exactly to the bounding box of the .container element.
-    await page.setViewport({ width: 880, height: 1200, deviceScaleFactor: 2 })
-    const html = renderHtml(text, mode, lang, theme)
+        // Attempt networkidle0 to wait for PrismJS components to finish loading from CDN.
+        // If offline or timeout, fallback to standard load.
+        try {
+          await page.setContent(html, { waitUntil: 'networkidle0', timeout: 6000 })
+        } catch (err) {
+          await page.setContent(html, { waitUntil: 'load', timeout: 3000 }).catch(() => {})
+        }
 
-    // Attempt networkidle0 to wait for PrismJS components to finish loading from CDN.
-    // If offline or timeout, fallback to standard load.
-    try {
-      await page.setContent(html, { waitUntil: 'networkidle0', timeout: 6000 })
-    } catch (err) {
-      await page.setContent(html, { waitUntil: 'load', timeout: 3000 }).catch(() => {})
-    }
+        const container = await page.$('.container')
+        const image = await (container || page).screenshot({
+          type: 'png',
+          encoding: 'binary',
+        })
 
-    const container = await page.$('.container')
-    const image = await (container || page).screenshot({
-      type: 'png',
-      encoding: 'binary'
-    })
-
-    return Buffer.from(image)
+        return Buffer.from(image)
+      },
+      {
+        label: `${PLUGIN_NAME} 图片渲染`,
+        timeoutMs: 20_000,
+        viewport: { width: 880, height: 1200, deviceScaleFactor: 2 },
+      },
+    )
   } catch (err) {
     console.error('[渲染] 渲染图片出错:', err)
     return null
-  } finally {
-    if (page) {
-      await page.close().catch(() => {})
-    }
   }
 }
 
@@ -623,7 +504,7 @@ export default definePlugin({
         defaultMode: 'auto',
         defaultTheme: 'one-dark',
         whitelist: [],
-        keywords: ['渲染', 'render', '转图片']
+        keywords: ['渲染', 'render', '转图片'],
       }
 
       if (!existsSync(configPath)) {
@@ -634,7 +515,7 @@ export default definePlugin({
         const fileContent = readFileSync(configPath, 'utf-8')
         return {
           ...defaultConfig,
-          ...JSON.parse(fileContent)
+          ...JSON.parse(fileContent),
         }
       } catch (err: any) {
         ctx.logger.error(`加载配置文件失败，将使用默认设置: ${err.message}`)
@@ -646,13 +527,13 @@ export default definePlugin({
 
     // Supported modes and themes mapping
     const modesMap: Record<string, 'markdown' | 'editor'> = {
-      'md': 'markdown',
-      'markdown': 'markdown',
-      'rich': 'markdown',
-      'code': 'editor',
-      'editor': 'editor',
-      'txt': 'editor',
-      'text': 'editor'
+      md: 'markdown',
+      markdown: 'markdown',
+      rich: 'markdown',
+      code: 'editor',
+      editor: 'editor',
+      txt: 'editor',
+      text: 'editor',
     }
 
     const themesList = ['vscode-dark', 'vscode-light', 'one-dark', 'dracula', 'github-light', 'nord', 'monokai']
@@ -669,9 +550,9 @@ export default definePlugin({
       }
 
       const rawText = ctx.text(e).trim()
-      
+
       // Keyword matching
-      const matchedKeyword = config.keywords.find(kw => rawText.startsWith(kw))
+      const matchedKeyword = config.keywords.find((kw) => rawText.startsWith(kw))
       if (!matchedKeyword) return
 
       // Parse parameters (e.g. "渲染 md dracula")
@@ -691,64 +572,64 @@ export default definePlugin({
 
       // Language alias mapping to canonical PrismJS language names
       const languageAliases: Record<string, string> = {
-        'js': 'javascript',
-        'javascript': 'javascript',
-        'ts': 'typescript',
-        'typescript': 'typescript',
-        'jsx': 'jsx',
-        'tsx': 'tsx',
-        'py': 'python',
-        'python': 'python',
-        'go': 'go',
-        'golang': 'go',
-        'rs': 'rust',
-        'rust': 'rust',
-        'c': 'c',
-        'cpp': 'cpp',
+        js: 'javascript',
+        javascript: 'javascript',
+        ts: 'typescript',
+        typescript: 'typescript',
+        jsx: 'jsx',
+        tsx: 'tsx',
+        py: 'python',
+        python: 'python',
+        go: 'go',
+        golang: 'go',
+        rs: 'rust',
+        rust: 'rust',
+        c: 'c',
+        cpp: 'cpp',
         'c++': 'cpp',
         'c#': 'csharp',
-        'csharp': 'csharp',
-        'java': 'java',
-        'bash': 'bash',
-        'sh': 'bash',
-        'shell': 'bash',
-        'json': 'json',
-        'yaml': 'yaml',
-        'yml': 'yaml',
-        'md': 'markdown',
-        'markdown': 'markdown',
-        'html': 'html',
-        'css': 'css',
-        'sql': 'sql',
-        'xml': 'xml',
-        'txt': 'text',
-        'text': 'text',
-        'php': 'php',
-        'rb': 'ruby',
-        'ruby': 'ruby',
-        'pl': 'perl',
-        'perl': 'perl',
-        'dart': 'dart',
-        'swift': 'swift',
-        'kt': 'kotlin',
-        'kotlin': 'kotlin',
-        'scala': 'scala',
-        'hs': 'haskell',
-        'haskell': 'haskell',
-        'lua': 'lua',
-        'r': 'r',
-        'powershell': 'powershell',
-        'ps1': 'powershell',
-        'docker': 'dockerfile',
-        'dockerfile': 'dockerfile',
-        'ini': 'ini',
-        'toml': 'toml',
-        'diff': 'diff',
-        'scss': 'scss',
-        'less': 'less',
-        'objc': 'objectivec',
-        'objectivec': 'objectivec',
-        'asm': 'asm'
+        csharp: 'csharp',
+        java: 'java',
+        bash: 'bash',
+        sh: 'bash',
+        shell: 'bash',
+        json: 'json',
+        yaml: 'yaml',
+        yml: 'yaml',
+        md: 'markdown',
+        markdown: 'markdown',
+        html: 'html',
+        css: 'css',
+        sql: 'sql',
+        xml: 'xml',
+        txt: 'text',
+        text: 'text',
+        php: 'php',
+        rb: 'ruby',
+        ruby: 'ruby',
+        pl: 'perl',
+        perl: 'perl',
+        dart: 'dart',
+        swift: 'swift',
+        kt: 'kotlin',
+        kotlin: 'kotlin',
+        scala: 'scala',
+        hs: 'haskell',
+        haskell: 'haskell',
+        lua: 'lua',
+        r: 'r',
+        powershell: 'powershell',
+        ps1: 'powershell',
+        docker: 'dockerfile',
+        dockerfile: 'dockerfile',
+        ini: 'ini',
+        toml: 'toml',
+        diff: 'diff',
+        scss: 'scss',
+        less: 'less',
+        objc: 'objectivec',
+        objectivec: 'objectivec',
+        asm: 'asm',
       }
 
       // Get quoted message first
@@ -816,14 +697,17 @@ export default definePlugin({
 
       // Check if there is actual content to render
       if (!targetText.trim()) {
-        await e.reply('❌ 请在回复(引用)一条消息后发送“渲染”进行转图，或者直接发送“渲染 [文本内容]”\n💡 支持参数（模式、主题、语言），例如：“渲染 md dracula”', true)
+        await e.reply(
+          '❌ 请在回复(引用)一条消息后发送“渲染”进行转图，或者直接发送“渲染 [文本内容]”\n💡 支持参数（模式、主题、语言），例如：“渲染 md dracula”',
+          true,
+        )
         return
       }
 
       // Auto-detect mode and language
       if (mode === 'auto') {
         const trimmed = targetText.trim()
-        
+
         // 1. Detect if it's a code block
         const codeBlockMatch = trimmed.match(/^```(\w*)\n([\s\S]+?)\n```$/)
         if (codeBlockMatch) {
@@ -859,51 +743,32 @@ export default definePlugin({
         }
       }
 
-
       ctx.logger.info(`[渲染] 开始为用户 ${e.user_id} 渲染图片: 模式=${mode}, 主题=${theme}, 语言=${lang}`)
-      
-      let promptMsg: any = null
-      try {
-        promptMsg = await e.reply('正在生成渲染图片，请稍候...', false)
-        
-        const imageBuffer = await renderImage(targetText, mode as any, lang, theme)
 
-        if (promptMsg && promptMsg.message_id) {
-          await ctx.bot.recallMsg(promptMsg.message_id).catch(() => {})
-        }
+      const renderAndReply = async () => {
+        try {
+          const imageBuffer = await renderImage(targetText, mode as any, lang, theme)
 
-        if (imageBuffer) {
-          const base64Img = `base64://${imageBuffer.toString('base64')}`
-          await e.reply(ctx.segment.image(base64Img))
-          ctx.logger.info(`[渲染] 渲染图片生成并发送成功`)
-        } else {
-          throw new Error('生成的图片缓冲区为空')
+          if (imageBuffer) {
+            const base64Img = `base64://${imageBuffer.toString('base64')}`
+            await e.reply(ctx.segment.image(base64Img))
+            ctx.logger.info(`[渲染] 渲染图片生成并发送成功`)
+          } else {
+            throw new Error('生成的图片缓冲区为空')
+          }
+        } catch (err: any) {
+          ctx.logger.error(`[渲染] 渲染失败: ${err.message}`)
+          await e.reply(`❌ 渲染失败，错误信息: ${err.message}`, true)
         }
-      } catch (err: any) {
-        ctx.logger.error(`[渲染] 渲染失败: ${err.message}`)
-        if (promptMsg && promptMsg.message_id) {
-          await ctx.bot.recallMsg(promptMsg.message_id).catch(() => {})
-        }
-        await e.reply(`❌ 渲染失败，错误信息: ${err.message}`, true)
+      }
+
+      if (e.message_type === 'group') {
+        await runWithReaction(e, renderAndReply)
+      } else {
+        await renderAndReply()
       }
     })
 
     ctx.logger.info(`[${PLUGIN_NAME}] 插件启动成功`)
-
-    // Clean up browser on uninstall
-    return async () => {
-      if (browserLaunchPromise) {
-        try {
-          const b = await browserLaunchPromise
-          await b.close()
-        } catch {}
-        browserLaunchPromise = null
-      } else if (browser) {
-        try {
-          await browser.close()
-        } catch {}
-      }
-      browser = null
-    }
-  }
+  },
 })
