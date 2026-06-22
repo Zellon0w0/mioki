@@ -225,17 +225,46 @@ let browserLaunchPromise: Promise<Browser> | null = null;
 const md = new MarkdownIt();
 md.use(mk);
 
+function getChromeCandidates(): string[] {
+  const localAppData = process.env.LOCALAPPDATA
+  const programFiles = process.env.PROGRAMFILES
+  const programFilesX86 = process.env['PROGRAMFILES(X86)']
+
+  return [
+    process.env.PUPPETEER_EXECUTABLE_PATH,
+    process.env.CHROME_PATH,
+    '/usr/bin/chromium',
+    '/usr/bin/chromium-browser',
+    '/usr/bin/google-chrome',
+    '/usr/bin/google-chrome-stable',
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+    programFiles ? join(programFiles, 'Google/Chrome/Application/chrome.exe') : '',
+    programFilesX86 ? join(programFilesX86, 'Google/Chrome/Application/chrome.exe') : '',
+    localAppData ? join(localAppData, 'Google/Chrome/Application/chrome.exe') : '',
+  ].filter((candidate): candidate is string => Boolean(candidate))
+}
+
+function findChromeExecutable(): string {
+  const executablePath = getChromeCandidates().find((candidate) => existsSync(candidate))
+  if (!executablePath) {
+    throw new Error('未找到 Chrome/Chromium，请设置 PUPPETEER_EXECUTABLE_PATH 或 CHROME_PATH')
+  }
+  return executablePath
+}
+
 /**
  * 获取浏览器实例
  */
 async function getBrowserInstance(): Promise<Browser> {
-  if (globalBrowser) {
+  if (globalBrowser && globalBrowser.connected) {
     return globalBrowser;
   }
+  globalBrowser = null;
+
   if (!browserLaunchPromise) {
     console.log('启动浏览器实例...');
     browserLaunchPromise = puppeteer.launch({
-      executablePath: '/usr/bin/chromium',
+      executablePath: findChromeExecutable(),
       headless: true,
       args: [
         '--no-sandbox',
@@ -248,6 +277,11 @@ async function getBrowserInstance(): Promise<Browser> {
     }).then(b => {
       globalBrowser = b;
       browserLaunchPromise = null;
+      b.on('disconnected', () => {
+        if (globalBrowser === b) {
+          globalBrowser = null;
+        }
+      });
       return b;
     }).catch(err => {
       browserLaunchPromise = null;
@@ -266,7 +300,7 @@ async function closeBrowserInstance() {
     try {
       const b = await browserLaunchPromise;
       const pages = await b.pages();
-      await Promise.all(pages.map((page: Page) => page.close()));
+      await Promise.all(pages.map((page: Page) => page.close().catch(() => {})));
       await b.close();
     } catch (err) {
       console.error('关闭正在启动的浏览器时出错:', err);
@@ -280,7 +314,7 @@ async function closeBrowserInstance() {
     console.log('关闭浏览器实例...');
     try {
       const pages = await globalBrowser.pages();
-      await Promise.all(pages.map((page: Page) => page.close()));
+      await Promise.all(pages.map((page: Page) => page.close().catch(() => {})));
       await globalBrowser.close();
     } catch (err) {
       console.error('关闭浏览器时出错:', err);
@@ -791,23 +825,40 @@ export default definePlugin({
               }
             }
             
-            const response = await Promise.race([
-              openai.chat.completions.create({
-                model: modelName,
-                max_tokens: 1024,
-                temperature: 0.24,
-                messages: [
-                  {
-                    role: 'system',
-                    content: '你是一个专业、高效的信息检索引擎。你的文风精简，但直击要害。请使用中文回复，并尽可能使用 Markdown 语法（包括数学公式）。',
-                  },
-                  { role: 'user', content: userMessageContent },
-                ],
-              }),
-              new Promise((_, reject) => 
-                setTimeout(() => reject(new Error('请求超时')), baseConfig.OPENAI_TIMEOUT)
-              )
-            ]) as any; // 类型转换
+            const apiCallPromise = openai.chat.completions.create({
+              model: modelName,
+              max_tokens: 1024,
+              temperature: 0.24,
+              messages: [
+                {
+                  role: 'system',
+                  content: '你是一个专业、高效的信息检索引擎。你的文风精简，但直击要害。请使用中文回复，并尽可能使用 Markdown 语法（包括数学公式）。',
+                },
+                { role: 'user', content: userMessageContent },
+              ],
+            });
+
+            // Prevent unhandled promise rejection if Promise.race is won by the timeout
+            apiCallPromise.catch(() => {});
+
+            let timeoutId: NodeJS.Timeout | undefined;
+            const timeoutPromise = new Promise<never>((_, reject) => {
+              timeoutId = setTimeout(() => reject(new Error('请求超时')), baseConfig.OPENAI_TIMEOUT);
+            });
+
+            let response: any;
+            try {
+              response = await Promise.race([
+                apiCallPromise,
+                timeoutPromise
+              ]);
+            } finally {
+              if (timeoutId) {
+                clearTimeout(timeoutId);
+              }
+            }
+
+
 
             const replyContent = (response.choices?.[0]?.message?.content ?? '').trim();
             if (!replyContent) {
@@ -831,19 +882,27 @@ export default definePlugin({
               return;
             }
 
+            let imagePath: string | null = null;
             try {
-              const imagePath = await renderMarkdownToImage(finalContent);
+              imagePath = await renderMarkdownToImage(finalContent);
               await e.reply([ctx.segment.image(imagePath)], true);
-              // 延迟删除图片，确保发送成功
-              setTimeout(() => {
-                unlink(imagePath, () => {});
-              }, 1000);
-              return;
             } catch (renderError) {
               console.error('渲染失败，回退到文本:', renderError);
               await e.reply(finalContent);
-              return;
+            } finally {
+              if (imagePath) {
+                const fileToDelete = imagePath;
+                const timer = setTimeout(() => {
+                  try {
+                    if (existsSync(fileToDelete)) {
+                      unlink(fileToDelete, () => {});
+                    }
+                  } catch {}
+                }, 15000);
+                ctx.clears.add(() => clearTimeout(timer));
+              }
             }
+            return;
            } catch (error) {
             lastError = error as Error;
             console.error(`请求失败 (${retry + 1}/${baseConfig.MAX_RETRIES + 1}):`, error);

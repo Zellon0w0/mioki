@@ -1,6 +1,7 @@
 import { definePlugin, findLocalPlugins, getAbsPluginDir, enablePlugin, runtimePlugins } from 'mioki'
 import path from 'node:path'
 import fs from 'node:fs'
+import express from 'express'
 
 interface WebUIPage {
   id: string
@@ -23,7 +24,7 @@ export default definePlugin({
     }
 
     // 2. 注册网页面板页面
-    webui.registerPage({
+    const unregisterPage = webui.registerPage({
       id: '白名单管理',
       title: '黑白名单管理',
       icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>',
@@ -31,7 +32,7 @@ export default definePlugin({
     })
 
     // 3. 注册 API 路由
-    const app = webui.app
+    const router = express.Router()
     const authMiddleware = webui.authMiddleware
 
     // 智能识别辅助函数
@@ -59,7 +60,7 @@ export default definePlugin({
     }
 
     // API: 获取所有插件的黑白名单配置
-    app.get('/api/whitelist/configs', authMiddleware, async (req: any, res: any) => {
+    router.get('/configs', authMiddleware, async (req: any, res: any) => {
       try {
         const localPlugins = await findLocalPlugins()
         const result = []
@@ -151,7 +152,7 @@ export default definePlugin({
     })
 
     // API: 保存指定插件的黑白名单配置
-    app.post('/api/whitelist/save', authMiddleware, async (req: any, res: any) => {
+    router.post('/save', authMiddleware, async (req: any, res: any) => {
       const { pluginName, key, value } = req.body
 
       if (!pluginName || !key || !Array.isArray(value)) {
@@ -187,10 +188,11 @@ export default definePlugin({
         if (pluginEntry) {
           ctx.logger.info(`正在热重载插件: ${pluginName}`)
           const type = pluginEntry.type
-          const pluginDef = pluginEntry.plugin
           try {
             await pluginEntry.disable()
-            await enablePlugin(ctx.bots, pluginDef, type)
+            const pluginPath = path.join(getAbsPluginDir(), pluginName)
+            const importedPlugin = (await ctx.jiti.import(pluginPath, { default: true })) as any
+            await enablePlugin(ctx.bots, importedPlugin, type)
             ctx.logger.info(`插件 ${pluginName} 热重载成功`)
           } catch (reloadErr: any) {
             ctx.logger.error(`热重载插件 ${pluginName} 失败: ${reloadErr.message}`)
@@ -204,5 +206,12 @@ export default definePlugin({
         res.status(500).json({ error: err.message })
       }
     })
+
+    const unregisterRouter = webui.registerRouter('/api/whitelist', router)
+
+    return () => {
+      unregisterPage?.()
+      unregisterRouter?.()
+    }
   }
 })

@@ -1,0 +1,29 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "CS更新 插件配置",
+  "description": "CS2 游戏更新快报推送与查询配置",
+  "type": "object",
+  "properties": {
+    "enabled": {
+      "title": "启用状态",
+      "type": "boolean",
+      "default": true,
+      "description": "是否启用CS更新插件"
+    },
+    "cronTime": {
+      "title": "检查时间 (Cron)",
+      "type": "string",
+      "default": "0 * * * *",
+      "description": "定时检查更新的 Cron 表达式，如每小时检测一次为 '0 * * * *'"
+    },
+    "whitelist": {
+      "title": "白名单群组",
+      "type": "array",
+      "items": {
+        "type": "integer"
+      },
+      "description": "允许使用此插件的 QQ 群号，以及自动推送更新的目标群组，每行一个"
+    }
+  },
+  "required": ["cronTime"]
+}

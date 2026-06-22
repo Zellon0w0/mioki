@@ -250,15 +250,36 @@ export default definePlugin({
     }
     const registeredPages: WebUIPage[] = []
 
+    const registerRouter = (prefix: string, router: express.Router) => {
+      app.use(prefix, router)
+      ctx.logger.info(`WebUI 注册新路由器: ${prefix}`)
+      return () => {
+        if (app._router && app._router.stack) {
+          app._router.stack = app._router.stack.filter((layer: any) => layer.handle !== router)
+        }
+        ctx.logger.info(`WebUI 注销路由器: ${prefix}`)
+      }
+    }
+
+    const registerPage = (page: WebUIPage) => {
+      if (!registeredPages.some(p => p.id === page.id)) {
+        registeredPages.push(page)
+        ctx.logger.info(`WebUI 注册新页面: [${page.title}] -> ${page.url}`)
+      }
+      return () => {
+        const index = registeredPages.findIndex(p => p.id === page.id)
+        if (index > -1) {
+          registeredPages.splice(index, 1)
+          ctx.logger.info(`WebUI 注销页面: [${page.title}]`)
+        }
+      }
+    }
+
     ctx.addService('webui', {
       app,
       authMiddleware,
-      registerPage: (page: WebUIPage) => {
-        if (!registeredPages.some(p => p.id === page.id)) {
-          registeredPages.push(page)
-          ctx.logger.info(`WebUI 注册新页面: [${page.title}] -> ${page.url}`)
-        }
-      },
+      registerPage,
+      registerRouter,
       getPages: () => registeredPages
     })
 
@@ -415,10 +436,11 @@ export default definePlugin({
         if (pluginEntry) {
           ctx.logger.info(`正在热重载插件: ${name}`)
           const type = pluginEntry.type
-          const pluginDef = pluginEntry.plugin
           try {
             await pluginEntry.disable()
-            await enablePlugin(ctx.bots, pluginDef, type)
+            const pluginPath = path.join(getAbsPluginDir(), name)
+            const importedPlugin = (await ctx.jiti.import(pluginPath, { default: true })) as any
+            await enablePlugin(ctx.bots, importedPlugin, type)
             ctx.logger.info(`插件 ${name} 热重载成功`)
           } catch (reloadErr: any) {
             ctx.logger.error(`热重载插件 ${name} 失败: ${reloadErr.message}`)

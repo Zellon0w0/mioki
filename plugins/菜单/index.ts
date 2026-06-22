@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import crypto from 'node:crypto'
 import type { Browser } from 'puppeteer-core'
 import type { GroupMessageEvent, PrivateMessageEvent } from 'napcat-sdk'
+import express from 'express'
 
 const PLUGIN_NAME = '菜单'
 const PLUGIN_VERSION = '1.0.0'
@@ -57,9 +58,11 @@ function findChromeExecutable(): string {
 }
 
 async function getBrowser(): Promise<Browser> {
-  if (browser) {
+  if (browser && browser.connected) {
     return browser
   }
+  browser = null
+
   if (!browserLaunchPromise) {
     browserLaunchPromise = puppeteer.launch({
       executablePath: findChromeExecutable(),
@@ -81,6 +84,11 @@ async function getBrowser(): Promise<Browser> {
     }).then(b => {
       browser = b
       browserLaunchPromise = null
+      b.on('disconnected', () => {
+        if (browser === b) {
+          browser = null
+        }
+      })
       return b
     }).catch(err => {
       browserLaunchPromise = null
@@ -101,6 +109,7 @@ function escapeHtml(str: string): string {
 }
 
 export function renderHtml(config: PluginConfig, avatarUrl: string, nickname: string): string {
+  const angle = (Math.random() * 0.4 - 0.2).toFixed(2)
   const sortedCategories = [...(config.categories || [])].sort(
     (a, b) => (a.order ?? 10) - (b.order ?? 10)
   )
@@ -735,6 +744,7 @@ export function renderHtml(config: PluginConfig, avatarUrl: string, nickname: st
         }
         .menu-wrapper {
           width: 800px;
+          transform: rotate(${angle}deg);
         }
         .menu-grid {
           display: grid;
@@ -764,12 +774,13 @@ export async function renderMenuImage(config: PluginConfig, avatarUrl: string, n
   const page = await instance.newPage()
 
   try {
-    await page.setViewport({ width: 850, height: 1800, deviceScaleFactor: 2 })
+    await page.setViewport({ width: 850, height: 1800, deviceScaleFactor: 1.5 })
     await page.setContent(renderHtml(config, avatarUrl, nickname), { waitUntil: 'networkidle0', timeout: 30_000 })
 
     const target = await page.$('.menu-container')
     const image = await (target || page).screenshot({
-      type: 'png',
+      type: 'jpeg',
+      quality: 90,
       encoding: 'binary',
     })
 
@@ -798,7 +809,7 @@ function getMenuImageCache(
     version: PLUGIN_VERSION,
   }
   const hash = crypto.createHash('sha256').update(JSON.stringify(hashObj)).digest('hex')
-  const cachePath = join(cacheDir, `${hash}.png`)
+  const cachePath = join(cacheDir, `${hash}.jpg`)
 
   if (!forceRefresh && existsSync(cachePath)) {
     try {
@@ -819,7 +830,7 @@ function saveMenuImageCache(cachePath: string, image: Buffer) {
     const files = readdirSync(cacheDir)
     const currentFile = join(cachePath).split(/[\\/]/).pop()
     for (const file of files) {
-      if (file.endsWith('.png') && file !== currentFile) {
+      if ((file.endsWith('.png') || file.endsWith('.jpg') || file.endsWith('.jpeg')) && file !== currentFile) {
         try {
           unlinkSync(join(cacheDir, file))
         } catch {}
@@ -839,14 +850,16 @@ export default definePlugin({
     // WebUI 预览页面与 API 注册
     const webui = ctx.services.webui as any
     if (webui) {
-      webui.registerPage({
+      const unregisterPage = webui.registerPage({
         id: 'menu-preview',
         title: '菜单预览',
         icon: '📊',
         url: '/plugins/菜单/index.html'
       })
+      ctx.clears.add(() => unregisterPage?.())
 
-      webui.app.get('/api/menu/preview/image', webui.authMiddleware, async (req: any, res: any) => {
+      const router = express.Router()
+      router.get('/preview/image', webui.authMiddleware, async (req: any, res: any) => {
         try {
           const forceRefresh = req.query.bypassCache === 'true'
           const config = loadConfig()
@@ -867,13 +880,16 @@ export default definePlugin({
             saveMenuImageCache(cached.cachePath, image)
           }
 
-          res.set('Content-Type', 'image/png')
+          res.set('Content-Type', 'image/jpeg')
           res.send(image)
         } catch (err: any) {
           ctx.logger.error(`[菜单] WebUI 预览生成失败: ${err.message}`)
           res.status(500).json({ error: err.message })
         }
       })
+
+      const unregisterRouter = webui.registerRouter('/api/menu', router)
+      ctx.clears.add(() => unregisterRouter?.())
     }
 
     const loadConfig = (): PluginConfig => {
@@ -920,8 +936,9 @@ export default definePlugin({
 
     ctx.logger.info(`[菜单] 插件 v${PLUGIN_VERSION} 已加载`)
 
+    const config = loadConfig()
+
     const handleMessage = async (e: GroupMessageEvent | PrivateMessageEvent) => {
-      const config = loadConfig()
       if (!config.enabled) return
 
       // Handle whitelist if in group

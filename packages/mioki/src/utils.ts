@@ -769,7 +769,7 @@ export function filter<
  * @return {string} stringify 结果
  */
 export function stringifyError(error: any): string {
-  if (typeof error === 'object') {
+  if (error && typeof error === 'object') {
     const errorType = error.constructor?.name ?? '未知错误'
     const errorMessage = error.message ?? '[无报错信息]'
     return `${errorType}: ${errorMessage}`

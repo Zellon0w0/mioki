@@ -81,6 +81,7 @@ id_ed25519
 **/plugins/**/*.db-*
 **/plugins/**/*.bak
 **/plugins/**/temp/
+**/plugins/**/cache/
 
 # Example Runtime Data & Logs
 example/data/

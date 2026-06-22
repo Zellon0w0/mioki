@@ -36,6 +36,7 @@ interface SearchSession {
   keyword: string
   results: SongItem[]
   expireTime: number
+  timer?: NodeJS.Timeout
 }
 
 // Puppeteer browser management
@@ -733,11 +734,22 @@ export default definePlugin({
             ? `${event.group_id}_${event.user_id}` 
             : `${event.user_id}`
           
+          const oldSession = sessions.get(sessionKey)
+          if (oldSession && oldSession.timer) {
+            clearTimeout(oldSession.timer)
+          }
+
+          const timer = setTimeout(() => {
+            sessions.delete(sessionKey)
+          }, config.sessionTimeoutMs)
+          ctx.clears.add(() => clearTimeout(timer))
+
           sessions.set(sessionKey, {
             platform,
             keyword,
             results: topSongs,
-            expireTime: Date.now() + config.sessionTimeoutMs
+            expireTime: Date.now() + config.sessionTimeoutMs,
+            timer
           })
 
           if (config.useImageRender) {
@@ -796,6 +808,7 @@ export default definePlugin({
 
       // Check session expiry
       if (Date.now() > session.expireTime) {
+        if (session.timer) clearTimeout(session.timer)
         sessions.delete(sessionKey)
         await event.reply('您的点歌会话已过期，请重新使用“点歌”指令搜索。', true)
         return
@@ -808,6 +821,7 @@ export default definePlugin({
       }
 
       const selectedSong = session.results[index]
+      if (session.timer) clearTimeout(session.timer)
       sessions.delete(sessionKey) // Consume the session immediately
 
       await event.reply(`已选择 [${selectedSong.name}]，正在解析语音，请稍候...`, false)
@@ -834,7 +848,7 @@ export default definePlugin({
         if (tempFilePath && existsSync(tempFilePath)) {
           // Delay deletion to give OneBot/NapCat a chance to load the file
           const filePathToDelete = tempFilePath
-          setTimeout(() => {
+          const timer = setTimeout(() => {
             try {
               if (existsSync(filePathToDelete)) {
                 unlinkSync(filePathToDelete)
@@ -844,16 +858,24 @@ export default definePlugin({
               ctx.logger.warn(`清理临时音频文件失败: ${cleanupErr.message}`)
             }
           }, 15000)
+          ctx.clears.add(() => clearTimeout(timer))
         }
       }
     })
 
-    // Return a clean up function to dispose of puppeteer browser
-    return () => {
-      if (browser) {
-        browser.close().catch(() => {})
-        browser = null
+    return async () => {
+      if (browserLaunchPromise) {
+        try {
+          const b = await browserLaunchPromise
+          await b.close()
+        } catch {}
+        browserLaunchPromise = null
+      } else if (browser) {
+        try {
+          await browser.close()
+        } catch {}
       }
+      browser = null
       sessions.clear()
     }
   }

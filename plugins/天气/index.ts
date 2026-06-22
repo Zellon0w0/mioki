@@ -10,7 +10,6 @@ setDefaultResultOrder('ipv4first')
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
-const WHITELIST_FILE = join(__dirname, 'whitelist.json')
 const FONT_FILE = join(__dirname, '../renderer/resources/HanYiBlack.woff2')
 const FONT_FACE_CSS = loadFontFaceCss()
 

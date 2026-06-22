@@ -45,19 +45,25 @@ export default definePlugin({
       }
     }
 
-    // Get news image
-    async function getNewsImageWithProxy(api: string) {
-      try {
-        const response = await axios.get(`${api}/60s?encoding=image`, {
-          responseType: 'arraybuffer',
-          timeout: 10000,
-        })
-        const base64Image = Buffer.from(response.data).toString('base64')
-        return `base64://${base64Image}`
-      } catch (err) {
-        ctx.logger.error(`获取新闻图片失败: ${err}`)
-        throw err
+    // Get news image with retry
+    async function getNewsImageWithProxy(api: string, maxRetries = 3, retryDelay = 3000) {
+      for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+          const response = await axios.get(`${api}/60s?encoding=image`, {
+            responseType: 'arraybuffer',
+            timeout: 10000,
+          })
+          const base64Image = Buffer.from(response.data).toString('base64')
+          return `base64://${base64Image}`
+        } catch (err: any) {
+          ctx.logger.warn(`获取新闻图片失败 (第 ${attempt}/${maxRetries} 次尝试): ${err.message || err}`)
+          if (attempt === maxRetries) {
+            throw err
+          }
+          await new Promise((resolve) => setTimeout(resolve, retryDelay))
+        }
       }
+      throw new Error('获取新闻图片未知错误')
     }
 
     const config = loadConfig()

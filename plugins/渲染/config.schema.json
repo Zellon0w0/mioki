@@ -1,0 +1,45 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "渲染 插件配置",
+  "description": "管理渲染插件的运行参数及白名单群组",
+  "type": "object",
+  "properties": {
+    "enabled": {
+      "title": "启用状态",
+      "type": "boolean",
+      "default": true,
+      "description": "是否开启引用消息渲染功能"
+    },
+    "defaultMode": {
+      "title": "默认渲染模式",
+      "type": "string",
+      "enum": ["auto", "markdown", "editor"],
+      "default": "auto",
+      "description": "默认渲染模式：auto (自动检测), markdown (富文本 Markdown 预览), editor (代码编辑器模式)"
+    },
+    "defaultTheme": {
+      "title": "默认主题",
+      "type": "string",
+      "enum": ["vscode-dark", "vscode-light", "one-dark", "dracula", "github-light", "nord", "monokai"],
+      "default": "vscode-dark",
+      "description": "渲染的代码高亮/编辑器主题"
+    },
+    "whitelist": {
+      "title": "群白名单",
+      "type": "array",
+      "items": {
+        "type": "integer"
+      },
+      "description": "允许触发此命令的 QQ 群号，留空表示全部允许，每行一个"
+    },
+    "keywords": {
+      "title": "触发关键词",
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "触发该插件渲染响应的关键词，如 '渲染', 'render', '转图片'，每行一个"
+    }
+  },
+  "required": ["enabled", "defaultMode", "defaultTheme", "whitelist", "keywords"]
+}

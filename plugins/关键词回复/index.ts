@@ -33,6 +33,7 @@ interface UserState {
   step: 'idle' | 'waiting_trigger' | 'waiting_content'
   tempRule?: Partial<ReplyRule>
   groupId?: number // 记录发起操作时的群号
+  timer?: NodeJS.Timeout
 }
 
 export default definePlugin({
@@ -70,8 +71,11 @@ export default definePlugin({
       }
     }
 
+    let config = loadConfig()
+
     // 保存配置
-    const saveConfig = (config: PluginConfig) => {
+    const saveConfig = (newConfig: PluginConfig) => {
+      config = newConfig
       try {
         fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8')
       } catch (err: any) {
@@ -94,7 +98,30 @@ export default definePlugin({
     }
 
     const resetUserState = (userId: number) => {
+      const state = userStates[userId]
+      if (state && state.timer) {
+        clearTimeout(state.timer)
+      }
       delete userStates[userId]
+    }
+
+    const setUserState = (userId: number, newState: UserState) => {
+      const oldState = userStates[userId]
+      if (oldState && oldState.timer) {
+        clearTimeout(oldState.timer)
+      }
+      
+      if (newState.step !== 'idle') {
+        newState.timer = setTimeout(() => {
+          resetUserState(userId)
+          ctx.logger.info(`用户 ${userId} 状态超时，自动清理。`)
+        }, 5 * 60 * 1000)
+        ctx.clears.add(() => {
+          if (newState.timer) clearTimeout(newState.timer)
+        })
+      }
+      
+      userStates[userId] = newState
     }
 
     const generateId = () => Math.random().toString(36).substring(2, 9)
@@ -138,7 +165,11 @@ export default definePlugin({
           }
 
           state.tempRule!.trigger = text
-          state.step = 'waiting_content'
+          setUserState(userId, {
+              step: 'waiting_content',
+              tempRule: state.tempRule,
+              groupId: state.groupId
+          })
           await e.reply(`已记录关键词：${text}\n请发送回复内容（支持文本、图片、表情、语音），或发送"取消"`)
           return
         }
@@ -200,11 +231,11 @@ export default definePlugin({
 
         if (args[0] === '添加') {
             const mode = args[1] === '模糊' ? 'fuzzy' : 'exact'
-            userStates[userId] = {
+            setUserState(userId, {
                 step: 'waiting_trigger',
                 tempRule: { mode },
                 groupId: groupId
-            }
+            })
             await e.reply(`进入${mode === 'fuzzy' ? '模糊' : '精准'}匹配添加模式。\n请发送触发关键词（仅支持文本），或发送"取消"`)
             return
         }
@@ -248,7 +279,6 @@ export default definePlugin({
         // 黑名单管理
         if (args[0] === '黑名单') {
             const op = args[1]
-            const config = loadConfig()
             if (op === '列表') {
                 await e.reply(`黑名单用户：${config.blacklist.join(', ') || '无'}`)
                 return
@@ -291,7 +321,6 @@ export default definePlugin({
         // 白名单管理
         if (args[0] === '白名单') {
             const op = args[1]
-            const config = loadConfig()
             if (op === '列表') {
                 await e.reply(`白名单群：${config.whitelist.join(', ') || '无 (所有群生效)'}`)
                 return
@@ -332,7 +361,6 @@ export default definePlugin({
       }
 
       // ---------------- 自动回复逻辑 ----------------
-      const config = loadConfig()
       if (!config.enabled) return
 
       // 1. 黑名单检查

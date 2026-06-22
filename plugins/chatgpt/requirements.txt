@@ -1,4 +1,0 @@
-openai
-puppeteer-core
-markdown-it
-markdown-it-katex

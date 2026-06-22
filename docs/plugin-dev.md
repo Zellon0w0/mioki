@@ -167,7 +167,7 @@ export default definePlugin({
 
 WebUI 修改并点击保存后，会：
 1. 更新目标插件目录下的 `config.json` 文件。
-2. 触发该插件的 **热重载 (Hot Reload)**：WebUI 调用框架的 `disable` 注销插件注册的所有事件和任务，接着重新运行 `enablePlugin`。
+2. 触发该插件的 **热重载 (Hot Reload)**：WebUI 调用框架的 `disable` 注销插件注册的所有事件和任务，并通过 `jiti.import` 重新导入最新代码，接着重新运行 `enablePlugin`。
 3. 插件的 `setup()` 函数重新执行，下次加载事件或任务时即可立即使用新的 `config.json` 参数，**无需重启机器人程序**。
 
 ---
@@ -202,3 +202,152 @@ WebUI 修改并点击保存后，会：
    - 触发指令：`#[插件目录名]`
    - 指令描述：`使用 [插件目录名] 插件`
 2. **自定义编辑**：自动同步后，管理员可在 WebUI 的“菜单与帮助插件配置”页面中，自定义修改各个插件在菜单上展示的命令列表、名称、指令说明以及展示顺序。
+
+---
+
+## 5. 插件资源与内存管理规范 (避坑指南)
+
+在开发与重构 Mioki 插件时，为避免**内存泄漏、Chromium 句柄残留、磁盘文件堆积、以及同步阻塞事件循环**等高风险问题，必须遵循以下开发规范：
+
+### 5.1 避免 Express 路由与 WebUI 页面泄漏
+禁止直接使用 `webui.app.get` 或 `app.post` 注册路由。当插件被热重载或禁用时，这些路由会残留在 Express 路由栈中，导致旧的 `MiokiContext` 无法被垃圾回收，并且匹配时旧版本层优先执行导致新修改不生效。
+- **规范做法**：使用 `webui.registerRouter(prefix, router)` 和 `webui.registerPage(page)` 注册。它们会返回注销函数。
+- **清理逻辑**：在 `ctx.clears` 中注册注销函数：
+  ```typescript
+  const unregisterPage = webui.registerPage({ id: 'my-plugin', title: '标题', ... })
+  const router = express.Router()
+  router.get('/data', ...)
+  const unregisterRouter = webui.registerRouter('/api/my-plugin', router)
+
+  ctx.clears.add(() => unregisterPage?.())
+  ctx.clears.add(() => unregisterRouter?.())
+  ```
+
+### 5.2 严格保护 Puppeteer 页面句柄
+使用 Chromium 渲染截图时，打开 `page` 后随后的页面渲染与截图操作如果抛出异常（网络超时、Chromium 崩盘等），会导致后面的 `page.close()` 被跳过，产生 Chromium 页面句柄残留并最终引发 OOM 崩溃。
+- **规范做法**：必须使用 `try...finally` 块确保 `page.close()` 绝对被执行。
+  ```typescript
+  const page = await browser.newPage()
+  try {
+    await page.setContent(htmlContent)
+    return await page.screenshot(...)
+  } finally {
+    await page.close()
+  }
+  ```
+- **关闭浏览器实例**：在插件清理钩子中，应使用 `async` 函数等待浏览器实例完全关闭，防止进程冲突：
+  ```typescript
+  return async () => {
+    await closeBrowserInstance()
+  }
+  ```
+
+### 5.3 临时文件清理与延迟安全
+很多插件发送渲染的临时图片、音视频后会延迟删除它们。若发送操作 `e.reply` 报错，则后续的清理逻辑被中断导致磁盘泄漏。另外，高负载下过短的删除延迟（例如 1 秒）可能使 NapCat 还没来得及读取文件就被删除了。
+- **规范做法**：将清理延迟设置为至少 **15 秒**，并使用 `finally` 块保证不论发送成败均会创建定时器，且将定时器注册到 `ctx.clears` 以在插件重载时自动注销：
+  ```typescript
+  let tempPath: string | null = null
+  try {
+    tempPath = await generateImage(...)
+    await e.reply(ctx.segment.image(`file://${tempPath}`))
+  } finally {
+    if (tempPath) {
+      const fileToDelete = tempPath
+      const timer = setTimeout(() => {
+        try {
+          if (fs.existsSync(fileToDelete)) fs.unlinkSync(fileToDelete)
+        } catch (err) {
+          ctx.logger.error(`清理临时文件失败: ${err}`)
+        }
+      }, 15000)
+      ctx.clears.add(() => clearTimeout(timer))
+    }
+  }
+  ```
+
+### 5.4 消除 Promise.race 导致的超时定时器泄漏
+使用 `Promise.race` 实现 API 接口超时控制时，一旦 API 快速成功响应，用于超时的 `setTimeout` 依然会在后台激活，阻止 Promise 垃圾回收。
+- **规范做法**：保存定时器 ID，并在 `finally` 中立即清理：
+  ```typescript
+  let timeoutId: NodeJS.Timeout | undefined
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error('请求超时')), baseConfig.OPENAI_TIMEOUT)
+  })
+
+  try {
+    const response = await Promise.race([apiCallPromise, timeoutPromise])
+    // 处理...
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId)
+  }
+  ```
+
+### 5.5 长生命周期状态与缓存的淘汰机制 (TTL)
+如果在 Map 或 Object 中保存了用户的临时点歌、多步交互状态，一旦用户半途放弃且没有发送“取消”，该状态将永久驻留在内存中。
+- **规范做法**：引入过期删除机制。例如保存用户状态时设置一个 5 分钟的超时定时器，并在状态结束或重载时将其清除。
+  ```typescript
+  // 点歌 session 淘汰示例
+  const timer = setTimeout(() => {
+    sessions.delete(sessionKey)
+  }, config.sessionTimeoutMs)
+  ctx.clears.add(() => clearTimeout(timer))
+  ```
+
+### 5.6 避免在消息处理器中进行同步磁盘 I/O
+每次有群消息进来时都同步调用 `fs.readFileSync` 读取配置文件，在高并发环境下会严重阻塞 Node.js 的单线程事件循环，导致网络心跳超时断开。
+- **规范做法**：在 `setup` 初始化时读取一次配置并放入闭包作用域变量（如 `let config = loadConfig()`）。由于 WebUI 修改配置时会自动触发插件的热重载，闭包内的变量会自动更新。如果通过指令写入了配置，应在写入时同时更新闭包中的 `config` 变量：
+  ```typescript
+  async setup(ctx) {
+    let config = loadConfig() // 仅在 setup 时读盘一次
+
+    ctx.handle('message', async (e) => {
+      if (!config.enabled) return // 直接使用内存变量
+      // ...
+    })
+  }
+  ```
+
+### 5.7 避免在模块顶层 (Module Scope) 声明可变状态与资源句柄
+在编写插件代码时，禁止在 `export default definePlugin(...)` 的外部（即模块顶层）声明与运行状态相关的可变变量，例如 `let browser: Browser | null`、`let activeSessions = new Map()` 或 `let isProcessing = false`。
+- **原因**：Node.js 对已导入的模块有强缓存机制。当通过 WebUI 修改配置触发插件热重载（先 `disable` 再重新 `enable`）时，该插件的 JS/TS 代码文件**不会被重新执行**，其模块顶层声明的变量也会被继续保留在内存中。这会导致：
+  1. 新的插件实例与旧的清理逻辑竞争同一个全局变量，导致生命周期错乱。
+  2. 旧的状态、缓存数据仍然遗留，导致内存泄漏或业务逻辑状态交错。
+- **规范做法**：所有会随插件开启、关闭、重载而发生变化的变量、连接或实例，**必须声明在 `setup()` 函数体内**，使其作为局部闭包变量与特定的插件实例生命周期绑定。
+
+### 5.8 异步清理定时器与文件操作中必须使用 try-catch 包裹
+在 `setTimeout` 或 `setInterval` 等异步回调函数中执行 `fs.unlinkSync`、`page.close()` 等操作时，切忌直接调用而不做异常捕获。
+- **原因**：异步回调的执行上下文已经脱离了插件主流程同步错误捕获（try-catch）作用域。如果在异步回调中发生任何异常（如文件已被提前删除、目录无权限、资源被占用等），且没有显式捕获，将会抛出 `uncaughtException`，在现代 Node.js 生产环境中这可能直接导致整个机器人服务进程崩溃挂掉。
+- **规范做法**：异步定时器和清理逻辑内部，必须使用 `try-catch` 块包裹所有可能报错的操作，并将错误打印在日志中：
+  ```typescript
+  const timer = setTimeout(() => {
+    try {
+      if (fs.existsSync(fileToDelete)) {
+        fs.unlinkSync(fileToDelete)
+      }
+    } catch (err) {
+      ctx.logger.error(`删除临时文件失败: ${err}`)
+    }
+  }, 15000)
+  ```
+
+### 5.9 妥善等待并 Await 清理钩子中的异步操作
+在插件卸载清理时，如果存在异步操作（如关闭 Puppeteer 浏览器实例、断开外部数据库连接），必须将其定义为 `async` 函数并妥善使用 `await` 或返回 Promise。
+- **原因**：若不等待异步清理执行完毕，当新版插件快速启动时，旧版的浏览器进程或数据库连接可能仍处于关闭中的未决状态，极易造成端口冲突、文件锁占用以及操作系统句柄泄漏等竞态问题。
+- **规范做法**：在卸载钩子中执行 `async` Teardown：
+  ```typescript
+  return async () => {
+    // 确保异步关闭实例完全完成
+    await closeBrowserInstance()
+  }
+  ```
+
+### 5.10 避免同步阻塞事件循环的耗时操作 (如 SQLite 同步 VACUUM)
+在消息处理器或主线程同步代码中，避免执行耗时的 CPU 密集型任务或阻塞式磁盘操作，例如对较大的 SQLite 数据库执行同步 `VACUUM`。
+- **原因**：Node.js 是单线程的，任何耗时的同步操作（例如在主线程同步调用大文件读写，或者让 SQLite 执行数秒的同步数据重组）都会导致事件循环暂停，导致机器人期间无法处理其他群的任何消息，甚至导致 WebSocket 连接心跳超时断开。
+- **规范做法**：耗时的数据整理、分析或 I/O，请使用异步方法执行，或者将其移至定时任务在深夜闲时分批处理。
+
+### 5.11 路径处理避免使用 path.join(filePath, '..') 获取父级目录
+当需要获取某个文件或目录的父级目录时，避免使用 `path.join(filePath, '..')`。
+- **原因**：虽然该操作在 Node.js 中能通过路径规范化解析出父目录，但在语意上不清晰，容易在相对路径、空路径或跨平台（如 Windows 反斜杠）中引入边缘 bug 或解析歧义。
+- **规范做法**：推荐使用 Node.js 官方提供的 `path.dirname(filePath)` 来获取父级目录，语义清晰且平台兼容性强。
+

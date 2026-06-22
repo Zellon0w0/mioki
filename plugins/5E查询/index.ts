@@ -55,22 +55,80 @@ export default definePlugin({
     if (!existsSync(TEMP_DIR)) mkdirSync(TEMP_DIR, { recursive: true })
 
     let globalBrowser: Browser | null = null
+    let browserLaunchPromise: Promise<Browser> | null = null
+
+function findChromeExecutable(configuredPath?: string): string {
+  if (configuredPath && existsSync(configuredPath)) {
+    return configuredPath
+  }
+  const localAppData = process.env.LOCALAPPDATA
+  const programFiles = process.env.PROGRAMFILES
+  const programFilesX86 = process.env['PROGRAMFILES(X86)']
+
+  const candidates = [
+    process.env.PUPPETEER_EXECUTABLE_PATH,
+    process.env.CHROME_PATH,
+    configuredPath,
+    '/usr/bin/chromium',
+    '/usr/bin/chromium-browser',
+    '/usr/bin/google-chrome',
+    '/usr/bin/google-chrome-stable',
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+    programFiles ? join(programFiles, 'Google/Chrome/Application/chrome.exe') : '',
+    programFilesX86 ? join(programFilesX86, 'Google/Chrome/Application/chrome.exe') : '',
+    localAppData ? join(localAppData, 'Google/Chrome/Application/chrome.exe') : '',
+  ].filter((c): c is string => Boolean(c))
+
+  const executablePath = candidates.find((c) => existsSync(c))
+  if (!executablePath) {
+    throw new Error('未找到 Chrome/Chromium，请设置 PUPPETEER_EXECUTABLE_PATH 或 CHROME_PATH')
+  }
+  return executablePath
+}
 
     async function getBrowserInstance(browserPath: string): Promise<Browser> {
-      if (!globalBrowser) {
-        globalBrowser = await puppeteer.launch({
-          executablePath: browserPath,
+      if (globalBrowser && globalBrowser.connected) {
+        return globalBrowser
+      }
+      globalBrowser = null
+
+      if (!browserLaunchPromise) {
+        browserLaunchPromise = puppeteer.launch({
+          executablePath: findChromeExecutable(browserPath),
           headless: true,
           args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
           defaultViewport: { width: 1000, height: 1200, deviceScaleFactor: 2 }
+        }).then((b) => {
+          globalBrowser = b
+          browserLaunchPromise = null
+          b.on('disconnected', () => {
+            if (globalBrowser === b) {
+              globalBrowser = null
+            }
+          })
+          return b
+        }).catch((err) => {
+          browserLaunchPromise = null
+          throw err
         })
       }
-      return globalBrowser
+      return browserLaunchPromise
     }
 
     async function closeBrowserInstance(): Promise<void> {
+      if (browserLaunchPromise) {
+        try {
+          const b = await browserLaunchPromise
+          await b.close()
+        } catch {}
+        browserLaunchPromise = null
+        globalBrowser = null
+        return
+      }
       if (globalBrowser) {
-        await globalBrowser.close()
+        try {
+          await globalBrowser.close()
+        } catch {}
         globalBrowser = null
       }
     }
@@ -127,7 +185,8 @@ export default definePlugin({
       const browser = await getBrowserInstance(config.browserPath)
       const page = await browser.newPage()
 
-      const fontStyle = `"汉仪文黑-85W", "HYWenHei-85W", "汉仪文黑", "HYWenHei", "Microsoft YaHei", sans-serif`
+      try {
+        const fontStyle = `"汉仪文黑-85W", "HYWenHei-85W", "汉仪文黑", "HYWenHei", "Microsoft YaHei", sans-serif`
 
       const formatDate = (timestamp: string | number) => {
         const date = new Date(Number(timestamp) * 1000)
@@ -262,19 +321,23 @@ export default definePlugin({
       `
 
       await page.setContent(htmlContent, { waitUntil: 'networkidle0' })
-      const outputPath = join(TEMP_DIR, `5e-${Date.now()}.png`)
-      const container = await page.$('.container')
-      if (container) {
-        await container.screenshot({ path: outputPath, type: 'png', omitBackground: true })
-      } else {
-        await page.screenshot({ path: outputPath, fullPage: true, type: 'png' })
+        const outputPath = join(TEMP_DIR, `5e-${Date.now()}.png`)
+        const container = await page.$('.container')
+        if (container) {
+          await container.screenshot({ path: outputPath, type: 'png', omitBackground: true })
+        } else {
+          await page.screenshot({ path: outputPath, fullPage: true, type: 'png' })
+        }
+        return outputPath
+      } finally {
+        await page.close()
       }
-      await page.close()
-      return outputPath
     }
 
+
+    const config = loadConfig()
+
     ctx.handle('message.group', async (e) => {
-      const config = loadConfig()
       if (!config.enabled) return
       if (config.whitelist.length > 0 && !config.whitelist.includes(e.group_id)) return
 
@@ -283,6 +346,7 @@ export default definePlugin({
         const query = text.replace('#5e', '').trim()
         if (!query) return e.reply('请输入要查询的 5E 玩家名称')
 
+        let imgPath: string | null = null
         try {
           ctx.logger.info(`[5E查询] 正在搜索玩家: ${query}`)
           const playerInfo = await getPlayerUuid(query, config)
@@ -299,19 +363,29 @@ export default definePlugin({
           if (!careerRes.success) throw new Error(careerRes.message || '获取生涯数据失败')
           if (!matchRes.success) throw new Error(matchRes.message || '获取比赛记录失败')
 
-          const imgPath = await generate5EImage(playerInfo, careerRes.data.career_data, matchRes.data.match_data || [], config)
+          imgPath = await generate5EImage(playerInfo, careerRes.data.career_data, matchRes.data.match_data || [], config)
           await e.reply(ctx.segment.image(`file://${imgPath}`))
-
-          setTimeout(() => { if (existsSync(imgPath)) unlink(imgPath, () => {}) }, 300000)
         } catch (err) {
           ctx.logger.error(`[5E查询] 查询失败: ${err}`)
           await e.reply(`查询失败: ${err instanceof Error ? err.message : String(err)}`)
+        } finally {
+          if (imgPath) {
+            const fileToDelete = imgPath
+            const timer = setTimeout(() => {
+              try {
+                if (existsSync(fileToDelete)) unlink(fileToDelete, () => {})
+              } catch (err) {
+                ctx.logger.error(`[5E查询] 清理临时文件失败: ${err}`)
+              }
+            }, 15000)
+            ctx.clears.add(() => clearTimeout(timer))
+          }
         }
       }
     })
 
-    return () => {
-      closeBrowserInstance()
+    return async () => {
+      await closeBrowserInstance()
     }
   }
 })

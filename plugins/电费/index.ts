@@ -36,6 +36,7 @@ interface PluginData {
 
 // 全局浏览器实例
 let globalBrowser: Browser | null = null;
+let browserLaunchPromise: Promise<Browser> | null = null;
 
 // 初始化 Markdown 解析器
 const md = new MarkdownIt();
@@ -299,14 +300,48 @@ const GLOBAL_STYLES = `
   }
 `;
 
+function findChromeExecutable(configuredPath?: string): string {
+  if (configuredPath && existsSync(configuredPath)) {
+    return configuredPath
+  }
+  const localAppData = process.env.LOCALAPPDATA
+  const programFiles = process.env.PROGRAMFILES
+  const programFilesX86 = process.env['PROGRAMFILES(X86)']
+
+  const candidates = [
+    process.env.PUPPETEER_EXECUTABLE_PATH,
+    process.env.CHROME_PATH,
+    configuredPath,
+    '/usr/bin/chromium',
+    '/usr/bin/chromium-browser',
+    '/usr/bin/google-chrome',
+    '/usr/bin/google-chrome-stable',
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+    programFiles ? join(programFiles, 'Google/Chrome/Application/chrome.exe') : '',
+    programFilesX86 ? join(programFilesX86, 'Google/Chrome/Application/chrome.exe') : '',
+    localAppData ? join(localAppData, 'Google/Chrome/Application/chrome.exe') : '',
+  ].filter((c): c is string => Boolean(c))
+
+  const executablePath = candidates.find((c) => existsSync(c))
+  if (!executablePath) {
+    throw new Error('未找到 Chrome/Chromium，请设置 PUPPETEER_EXECUTABLE_PATH 或 CHROME_PATH')
+  }
+  return executablePath
+}
+
 /**
  * 获取浏览器实例
  */
 async function getBrowserInstance(config: PluginConfig): Promise<Browser> {
-  if (!globalBrowser) {
+  if (globalBrowser && globalBrowser.connected) {
+    return globalBrowser;
+  }
+  globalBrowser = null;
+
+  if (!browserLaunchPromise) {
     console.log('启动浏览器实例...');
-    globalBrowser = await puppeteer.launch({
-      executablePath: config.browserPath,
+    browserLaunchPromise = puppeteer.launch({
+      executablePath: findChromeExecutable(config.browserPath),
       headless: true,
       args: [
         '--no-sandbox',
@@ -316,20 +351,47 @@ async function getBrowserInstance(config: PluginConfig): Promise<Browser> {
         '--disable-software-rasterizer'
       ],
       timeout: 60000
+    }).then((b) => {
+      globalBrowser = b;
+      browserLaunchPromise = null;
+      b.on('disconnected', () => {
+        if (globalBrowser === b) {
+          globalBrowser = null;
+        }
+      });
+      return b;
+    }).catch((err) => {
+      browserLaunchPromise = null;
+      throw err;
     });
   }
-  return globalBrowser;
+  return browserLaunchPromise;
 }
 
 /**
  * 关闭浏览器实例
  */
 async function closeBrowserInstance() {
+  if (browserLaunchPromise) {
+    console.log('等待正在启动的浏览器实例并关闭...');
+    try {
+      const b = await browserLaunchPromise;
+      const pages = await b.pages();
+      await Promise.all(pages.map(page => page.close().catch(() => {})));
+      await b.close();
+    } catch (err) {
+      console.error('关闭正在启动的浏览器时出错:', err);
+    } finally {
+      browserLaunchPromise = null;
+      globalBrowser = null;
+    }
+    return;
+  }
   if (globalBrowser) {
     console.log('关闭浏览器实例...');
     try {
       const pages = await globalBrowser.pages();
-      await Promise.all(pages.map(page => page.close()));
+      await Promise.all(pages.map(page => page.close().catch(() => {})));
       await globalBrowser.close();
     } catch (err) {
       console.error('关闭浏览器时出错:', err);
@@ -345,10 +407,9 @@ async function closeBrowserInstance() {
 async function renderHTMLToImage(html: string, config: PluginConfig): Promise<string> {
   console.log('渲染 HTML...');
 
+  const browser = await getBrowserInstance(config);
+  const page = await browser.newPage();
   try {
-    const browser = await getBrowserInstance(config);
-    const page = await browser.newPage();
-
     const totalWidth = config.contentWidth + config.padding * 2;
 
     await page.setViewport({
@@ -390,11 +451,12 @@ async function renderHTMLToImage(html: string, config: PluginConfig): Promise<st
       fullPage: true
     });
 
-    await page.close();
     return imagePath;
   } catch (error) {
     console.error('渲染 HTML 出错:', error);
     throw error;
+  } finally {
+    await page.close().catch(() => {});
   }
 }
 
@@ -1488,14 +1550,23 @@ export default definePlugin({
 
       if (!subCommand) {
         const thinking = await e.reply('正在查询电费信息，请稍候...');
+        let imagePath: string | null = null;
         try {
           const html = await generateElectricityStatusHTML(personNo, config);
-          const imagePath = await renderHTMLToImage(html, config);
+          imagePath = await renderHTMLToImage(html, config);
           await e.reply(ctx.segment.image(imagePath));
-          setTimeout(() => unlink(imagePath, () => {}), 1000);
         } catch (error) {
           await e.reply(`查询失败：${error instanceof Error ? error.message : '未知错误'}`);
         } finally {
+          if (imagePath) {
+            const fileToDelete = imagePath;
+            const timer = setTimeout(() => {
+              try {
+                if (existsSync(fileToDelete)) unlink(fileToDelete, () => {});
+              } catch {}
+            }, 15000);
+            ctx.clears.add(() => clearTimeout(timer));
+          }
           if (thinking?.message_id) {
             try {
               await ctx.bot.recallMsg(thinking.message_id);
@@ -1507,14 +1578,23 @@ export default definePlugin({
 
       if (subCommand === '历史') {
         const thinking = await e.reply('正在查询电费历史，请稍候...');
+        let imagePath: string | null = null;
         try {
           const html = await generateElectricityHistoryHTML(personNo, config);
-          const imagePath = await renderHTMLToImage(html, config);
+          imagePath = await renderHTMLToImage(html, config);
           await e.reply(ctx.segment.image(imagePath));
-          setTimeout(() => unlink(imagePath, () => {}), 1000);
         } catch (error) {
           await e.reply(`查询失败：${error instanceof Error ? error.message : '未知错误'}`);
         } finally {
+          if (imagePath) {
+            const fileToDelete = imagePath;
+            const timer = setTimeout(() => {
+              try {
+                if (existsSync(fileToDelete)) unlink(fileToDelete, () => {});
+              } catch {}
+            }, 15000);
+            ctx.clears.add(() => clearTimeout(timer));
+          }
           if (thinking?.message_id) {
             try {
               await ctx.bot.recallMsg(thinking.message_id);
@@ -1563,8 +1643,8 @@ export default definePlugin({
       await closeBrowserInstance();
     };
 
-    return () => {
-        cleanup();
+    return async () => {
+        await cleanup();
     }
   }
 });

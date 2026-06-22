@@ -74,10 +74,12 @@ interface KingCardData {
 }
 
 let browser: Browser | null = null
+let browserLaunchPromise: Promise<Browser> | null = null
 
 function pad2(value: number): string {
   return String(value).padStart(2, '0')
 }
+
 
 function getLocalDate(date = new Date()) {
   const local = new Date(date.getTime() + SHANGHAI_OFFSET_MS)
@@ -298,8 +300,13 @@ function findChromeExecutable(): string {
 }
 
 async function getBrowser(): Promise<Browser> {
-  if (!browser) {
-    browser = await puppeteer.launch({
+  if (browser && browser.connected) {
+    return browser
+  }
+  browser = null
+
+  if (!browserLaunchPromise) {
+    browserLaunchPromise = puppeteer.launch({
       executablePath: findChromeExecutable(),
       headless: true,
       args: [
@@ -316,15 +323,38 @@ async function getBrowser(): Promise<Browser> {
         height: 1200,
         deviceScaleFactor: 2,
       },
+    }).then((b) => {
+      browser = b
+      browserLaunchPromise = null
+      b.on('disconnected', () => {
+        if (browser === b) {
+          browser = null
+        }
+      })
+      return b
+    }).catch((err) => {
+      browserLaunchPromise = null
+      throw err
     })
   }
 
-  return browser
+  return browserLaunchPromise
 }
 
 async function closeBrowser(): Promise<void> {
+  if (browserLaunchPromise) {
+    try {
+      const b = await browserLaunchPromise
+      await b.close()
+    } catch {}
+    browserLaunchPromise = null
+    browser = null
+    return
+  }
   if (!browser) return
-  await browser.close()
+  try {
+    await browser.close()
+  } catch {}
   browser = null
 }
 

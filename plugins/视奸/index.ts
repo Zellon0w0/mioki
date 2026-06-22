@@ -22,11 +22,46 @@ interface PluginData {
 }
 
 let globalBrowser: Browser | null = null
+let browserLaunchPromise: Promise<Browser> | null = null
+
+function findChromeExecutable(configuredPath?: string): string {
+  if (configuredPath && existsSync(configuredPath)) {
+    return configuredPath
+  }
+  const localAppData = process.env.LOCALAPPDATA
+  const programFiles = process.env.PROGRAMFILES
+  const programFilesX86 = process.env['PROGRAMFILES(X86)']
+
+  const candidates = [
+    process.env.PUPPETEER_EXECUTABLE_PATH,
+    process.env.CHROME_PATH,
+    configuredPath,
+    '/usr/bin/chromium',
+    '/usr/bin/chromium-browser',
+    '/usr/bin/google-chrome',
+    '/usr/bin/google-chrome-stable',
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+    programFiles ? join(programFiles, 'Google/Chrome/Application/chrome.exe') : '',
+    programFilesX86 ? join(programFilesX86, 'Google/Chrome/Application/chrome.exe') : '',
+    localAppData ? join(localAppData, 'Google/Chrome/Application/chrome.exe') : '',
+  ].filter((c): c is string => Boolean(c))
+
+  const executablePath = candidates.find((c) => existsSync(c))
+  if (!executablePath) {
+    throw new Error('未找到 Chrome/Chromium，请设置 PUPPETEER_EXECUTABLE_PATH 或 CHROME_PATH')
+  }
+  return executablePath
+}
 
 async function getBrowserInstance(browserPath: string): Promise<Browser> {
-  if (!globalBrowser) {
-    globalBrowser = await puppeteer.launch({
-      executablePath: browserPath,
+  if (globalBrowser && globalBrowser.connected) {
+    return globalBrowser
+  }
+  globalBrowser = null
+
+  if (!browserLaunchPromise) {
+    browserLaunchPromise = puppeteer.launch({
+      executablePath: findChromeExecutable(browserPath),
       headless: true,
       args: [
         '--no-sandbox',
@@ -40,14 +75,37 @@ async function getBrowserInstance(browserPath: string): Promise<Browser> {
         height: 1000,
         deviceScaleFactor: 2
       }
+    }).then((b) => {
+      globalBrowser = b
+      browserLaunchPromise = null
+      b.on('disconnected', () => {
+        if (globalBrowser === b) {
+          globalBrowser = null
+        }
+      })
+      return b
+    }).catch((err) => {
+      browserLaunchPromise = null
+      throw err
     })
   }
-  return globalBrowser
+  return browserLaunchPromise
 }
 
 async function closeBrowserInstance(): Promise<void> {
+  if (browserLaunchPromise) {
+    try {
+      const b = await browserLaunchPromise
+      await b.close()
+    } catch {}
+    browserLaunchPromise = null
+    globalBrowser = null
+    return
+  }
   if (globalBrowser) {
-    await globalBrowser.close()
+    try {
+      await globalBrowser.close()
+    } catch {}
     globalBrowser = null
   }
 }
@@ -56,7 +114,8 @@ async function generateStalkImage(profile: any, games: any[], browserPath: strin
   const browser = await getBrowserInstance(browserPath)
   const page = await browser.newPage()
 
-  const fontStyle = `"汉仪文黑-85W", "HYWenHei-85W", "汉仪文黑", "HYWenHei", "Microsoft YaHei", sans-serif`
+  try {
+    const fontStyle = `"汉仪文黑-85W", "HYWenHei-85W", "汉仪文黑", "HYWenHei", "Microsoft YaHei", sans-serif`
 
   // 过滤出两周内玩过的游戏
   const recentGames = games.filter(g => (g.playtime.recent || g.playtime.recent_minutes) > 0)
@@ -197,8 +256,10 @@ async function generateStalkImage(profile: any, games: any[], browserPath: strin
   } else {
     await page.screenshot({ path: outputPath, fullPage: true, type: 'png' })
   }
-  await page.close()
   return outputPath
+  } finally {
+    await page.close()
+  }
 }
 
 export default definePlugin({
@@ -261,8 +322,9 @@ export default definePlugin({
       mkdirSync(tempDir, { recursive: true })
     }
 
+    const config = loadConfig()
+
     ctx.handle('message.group', async (e) => {
-      const config = loadConfig()
       if (!config.enabled) return
       if (config.whitelist.length > 0 && !config.whitelist.includes(e.group_id)) return
 
@@ -350,6 +412,7 @@ export default definePlugin({
         }
 
         ctx.logger.info(`[视奸] 正在查询 SteamID: ${steamId}`)
+        let imgPath: string | null = null
         try {
           // 并行获取用户信息和游戏记录
           const [profileRes, gamesRes] = await Promise.all([
@@ -365,23 +428,29 @@ export default definePlugin({
 
           if (profile.error) throw new Error(profile.error)
 
-          const imgPath = await generateStalkImage(profile, games, config.browserPath)
+          imgPath = await generateStalkImage(profile, games, config.browserPath)
           await e.reply(ctx.segment.image(`file://${imgPath}`))
-
-          // 延迟清理
-          setTimeout(() => {
-            if (existsSync(imgPath)) unlink(imgPath, () => {})
-          }, 10000)
-
         } catch (err) {
           ctx.logger.error(`[视奸] 查询失败: ${err}`)
           await e.reply(`查询失败: ${err instanceof Error ? err.message : String(err)}`)
+        } finally {
+          if (imgPath) {
+            const fileToDelete = imgPath
+            const timer = setTimeout(() => {
+              try {
+                if (existsSync(fileToDelete)) unlink(fileToDelete, () => {})
+              } catch (err) {
+                ctx.logger.error(`[视奸] 清理临时文件失败: ${err}`)
+              }
+            }, 15000)
+            ctx.clears.add(() => clearTimeout(timer))
+          }
         }
       }
     })
 
-    return () => {
-      closeBrowserInstance()
+    return async () => {
+      await closeBrowserInstance()
     }
   }
 })

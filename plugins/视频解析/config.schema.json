@@ -25,13 +25,7 @@
         "type": "integer"
       },
       "description": "屏蔽发送链接进行解析的 QQ 号，每行一个"
-    },
-    "randomVideoApi": {
-      "title": "随机视频 API",
-      "type": "string",
-      "default": "https://tucdn.wpon.cn/api-girl/index.php",
-      "description": "随机视频/sjsp 指令获取视频的页面地址"
     }
   },
-  "required": ["enabled", "whitelist", "blacklist", "randomVideoApi"]
+  "required": ["enabled", "whitelist", "blacklist"]
 }
