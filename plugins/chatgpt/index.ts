@@ -57,6 +57,11 @@ type ForwardContext = {
   images: PromptImage[]
 }
 
+type PromptOptions = {
+  content: string
+  noPic: boolean
+}
+
 type ChatContentPart =
   | { type: 'text'; text: string }
   | { type: 'image_url'; image_url: { url: string; detail?: 'auto' | 'low' | 'high' } }
@@ -80,6 +85,22 @@ const baseConfig = {
 
 function isRecord(value: unknown): value is Record<string, any> {
   return typeof value === 'object' && value !== null
+}
+
+function parsePromptOptions(content: string): PromptOptions {
+  let noPic = false
+  const normalizedContent = content
+    .replace(/(^|[\s\u3000])-nopic(?=$|[\s\u3000])/gi, (_match, prefix: string) => {
+      noPic = true
+      return prefix || ''
+    })
+    .replace(/[ \t\u3000]{2,}/g, ' ')
+    .trim()
+
+  return {
+    content: normalizedContent,
+    noPic,
+  }
 }
 
 function normalizeOneBotElement(element: any): RecvElement | null {
@@ -203,7 +224,7 @@ function normalizeForwardNode(node: any) {
   }
 }
 
-function buildForwardContext(payload: any, title: string): ForwardContext {
+function buildForwardContext(payload: any, title: string, includeImages = true): ForwardContext {
   const nodes = extractForwardMessages(payload).slice(0, baseConfig.MAX_FORWARD_NODES)
   const lines: string[] = []
   const images: PromptImage[] = []
@@ -217,17 +238,19 @@ function buildForwardContext(payload: any, title: string): ForwardContext {
 
     lines.push(`${nodeIndex + 1}. ${sender}${senderSuffix}${timeSuffix}: ${messageText}`)
 
-    normalized.elements
-      .filter((element): element is RecvImageElement => element.type === 'image')
-      .forEach((image, imageIndex) => {
-        const url = getImageUrlFromSegment(image)
-        if (url) {
-          images.push({
-            label: `${title} 第 ${nodeIndex + 1} 条图片 ${imageIndex + 1}`,
-            url,
-          })
-        }
-      })
+    if (includeImages) {
+      normalized.elements
+        .filter((element): element is RecvImageElement => element.type === 'image')
+        .forEach((image, imageIndex) => {
+          const url = getImageUrlFromSegment(image)
+          if (url) {
+            images.push({
+              label: `${title} 第 ${nodeIndex + 1} 条图片 ${imageIndex + 1}`,
+              url,
+            })
+          }
+        })
+    }
   })
 
   const overflow = extractForwardMessages(payload).length > baseConfig.MAX_FORWARD_NODES
@@ -721,6 +744,7 @@ export default definePlugin({
 触发方式:
 %问题 或 $问题
 支持直接发送图文、引用文字后提问、引用图片后提问、引用图文消息后提问、引用合并转发聊天记录后提问
+在问题后添加 -nopic 可禁用图片上传，仅使用文本上下文
 
 当前配置:
 - 启用状态: ${pluginConfig.enabled ? '已启用' : '已禁用'}
@@ -853,7 +877,11 @@ export default definePlugin({
       return images
     }
 
-    async function readForwardContext(event: MessageEvent, label: string): Promise<ForwardContext> {
+    async function readForwardContext(
+      event: MessageEvent,
+      label: string,
+      includeImages = true,
+    ): Promise<ForwardContext> {
       const forwardSegments = ctx.filter(event, 'forward') as RecvForwardElement[]
       const texts: string[] = []
       const images: PromptImage[] = []
@@ -862,7 +890,7 @@ export default definePlugin({
         const title = `${label}合并转发 ${index + 1}`
 
         if (Array.isArray(forward.content) && forward.content.length > 0) {
-          const context = buildForwardContext({ messages: forward.content }, title)
+          const context = buildForwardContext({ messages: forward.content }, title, includeImages)
           texts.push(context.text)
           images.push(...context.images)
           continue
@@ -876,7 +904,7 @@ export default definePlugin({
         try {
           const bot = ctx.pickBot(event.self_id) || ctx.bot
           const payload = await bot.api<any>('get_forward_msg', { id: forward.id })
-          const context = buildForwardContext(payload, title)
+          const context = buildForwardContext(payload, title, includeImages)
           texts.push(context.text)
           images.push(...context.images)
         } catch (error) {
@@ -909,13 +937,15 @@ export default definePlugin({
         return
       }
 
-      const content = text.slice(1).trim()
+      const { content, noPic } = parsePromptOptions(text.slice(1).trim())
       const quoteMsg = await ctx.getQuoteMsg(e)
       const quotedText = quoteMsg ? ctx.text(quoteMsg) : ''
-      const currentImages = ctx.filter(e, 'image')
-      const quoteImages = quoteMsg ? ctx.filter(quoteMsg, 'image') : []
-      const currentForwardContext = await readForwardContext(e, '当前消息')
-      const quoteForwardContext = quoteMsg ? await readForwardContext(quoteMsg, '引用消息') : { text: '', images: [] }
+      const currentImages = noPic ? [] : ctx.filter(e, 'image')
+      const quoteImages = noPic || !quoteMsg ? [] : ctx.filter(quoteMsg, 'image')
+      const currentForwardContext = await readForwardContext(e, '当前消息', !noPic)
+      const quoteForwardContext = quoteMsg
+        ? await readForwardContext(quoteMsg, '引用消息', !noPic)
+        : { text: '', images: [] }
       const forwardText = [quoteForwardContext.text, currentForwardContext.text].filter(Boolean).join('\n\n')
       const promptImages = [
         ...collectPromptImages(currentImages, quoteImages),
