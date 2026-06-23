@@ -6,7 +6,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync, readdir
 import MarkdownIt from 'markdown-it'
 // @ts-ignore missing types
 import mk from 'markdown-it-katex'
-import type { RecvImageElement } from 'napcat-sdk'
+import type { MessageEvent, RecvElement, RecvForwardElement, RecvImageElement } from 'napcat-sdk'
 import { sharedBrowser } from '../_shared/resource'
 
 async function runWithReaction<T>(event: any, task: () => Promise<T>, id = '60'): Promise<T> {
@@ -52,6 +52,11 @@ type PromptImage = {
   url: string
 }
 
+type ForwardContext = {
+  text: string
+  images: PromptImage[]
+}
+
 type ChatContentPart =
   | { type: 'text'; text: string }
   | { type: 'image_url'; image_url: { url: string; detail?: 'auto' | 'low' | 'high' } }
@@ -69,6 +74,172 @@ const baseConfig = {
   CHUNK_TIMEOUT: 30000,
   MAX_RETRIES: 2,
   RETRY_DELAY: 2000,
+  MAX_FORWARD_NODES: 80,
+  MAX_FORWARD_TEXT_LENGTH: 12_000,
+}
+
+function isRecord(value: unknown): value is Record<string, any> {
+  return typeof value === 'object' && value !== null
+}
+
+function normalizeOneBotElement(element: any): RecvElement | null {
+  if (typeof element === 'string') {
+    return { type: 'text', text: element }
+  }
+
+  if (!isRecord(element) || typeof element.type !== 'string') {
+    return null
+  }
+
+  if (isRecord(element.data)) {
+    return { type: element.type, ...element.data } as RecvElement
+  }
+
+  return element as RecvElement
+}
+
+function normalizeMessageElements(value: any): RecvElement[] {
+  if (!value) return []
+
+  if (typeof value === 'string') {
+    return [{ type: 'text', text: value }]
+  }
+
+  if (Array.isArray(value)) {
+    return value.map(normalizeOneBotElement).filter((element): element is RecvElement => !!element)
+  }
+
+  if (isRecord(value)) {
+    if (Array.isArray(value.message)) return normalizeMessageElements(value.message)
+    if (Array.isArray(value.content)) return normalizeMessageElements(value.content)
+    if (typeof value.raw_message === 'string') return normalizeMessageElements(value.raw_message)
+    if (typeof value.text === 'string') return normalizeMessageElements(value.text)
+
+    const element = normalizeOneBotElement(value)
+    return element ? [element] : []
+  }
+
+  return []
+}
+
+function formatMessageElements(elements: RecvElement[]): string {
+  return elements
+    .map((element) => {
+      switch (element.type) {
+        case 'text':
+          return element.text
+        case 'at':
+          return `@${element.qq}`
+        case 'face':
+          return `[表情:${element.id}]`
+        case 'image':
+          return element.summary ? `[图片:${element.summary}]` : '[图片]'
+        case 'record':
+          return '[语音]'
+        case 'video':
+          return '[视频]'
+        case 'file':
+          return `[文件:${element.file || element.url || '未知文件'}]`
+        case 'json':
+          return `[JSON消息:${element.data.slice(0, 120)}]`
+        case 'forward':
+          return `[合并转发:${element.id || '未知ID'}]`
+        case 'dice':
+        case 'rps':
+          return `[${element.type}:${element.result}]`
+        default:
+          return `[${element.type}消息]`
+      }
+    })
+    .join('')
+    .trim()
+}
+
+function extractForwardMessages(payload: any): any[] {
+  const data = isRecord(payload) && 'data' in payload ? payload.data : payload
+
+  if (Array.isArray(data)) return data
+
+  if (!isRecord(data)) return []
+
+  const candidates = [data.messages, data.message, data.content, data.nodes, data.message_list]
+  const messages = candidates.find((candidate) => Array.isArray(candidate))
+
+  if (Array.isArray(messages)) return messages
+
+  return []
+}
+
+function formatForwardTime(value: unknown): string {
+  const timestamp = Number(value)
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return ''
+
+  const ms = timestamp < 1e12 ? timestamp * 1000 : timestamp
+  return new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  }).format(new Date(ms))
+}
+
+function normalizeForwardNode(node: any) {
+  const data = isRecord(node) && node.type === 'node' && isRecord(node.data) ? node.data : node
+  const sender = isRecord(data?.sender) ? data.sender : {}
+  const userId = sender.user_id ?? data?.user_id ?? data?.uin ?? data?.sender_id ?? ''
+  const nickname = sender.nickname ?? data?.nickname ?? data?.name ?? data?.sender_name ?? ''
+  const time = data?.time ?? data?.timestamp ?? data?.send_time
+  const content = data?.content ?? data?.message ?? data?.raw_message ?? data?.text ?? data
+
+  return {
+    userId: String(userId || ''),
+    nickname: String(nickname || ''),
+    time: formatForwardTime(time),
+    elements: Array.isArray(data) || data?.type ? normalizeMessageElements(data) : normalizeMessageElements(content),
+  }
+}
+
+function buildForwardContext(payload: any, title: string): ForwardContext {
+  const nodes = extractForwardMessages(payload).slice(0, baseConfig.MAX_FORWARD_NODES)
+  const lines: string[] = []
+  const images: PromptImage[] = []
+
+  nodes.forEach((node, nodeIndex) => {
+    const normalized = normalizeForwardNode(node)
+    const sender = normalized.nickname || normalized.userId || '未知用户'
+    const senderSuffix = normalized.userId && normalized.nickname ? `(${normalized.userId})` : ''
+    const timeSuffix = normalized.time ? ` @ ${normalized.time}` : ''
+    const messageText = formatMessageElements(normalized.elements) || '[非文本消息]'
+
+    lines.push(`${nodeIndex + 1}. ${sender}${senderSuffix}${timeSuffix}: ${messageText}`)
+
+    normalized.elements
+      .filter((element): element is RecvImageElement => element.type === 'image')
+      .forEach((image, imageIndex) => {
+        const url = getImageUrlFromSegment(image)
+        if (url) {
+          images.push({
+            label: `${title} 第 ${nodeIndex + 1} 条图片 ${imageIndex + 1}`,
+            url,
+          })
+        }
+      })
+  })
+
+  const overflow = extractForwardMessages(payload).length > baseConfig.MAX_FORWARD_NODES
+  const text = [`${title}（共读取 ${nodes.length} 条${overflow ? '，其余已省略' : ''}）：`, ...lines].join('\n')
+
+  return {
+    text:
+      text.length > baseConfig.MAX_FORWARD_TEXT_LENGTH
+        ? `${text.slice(0, baseConfig.MAX_FORWARD_TEXT_LENGTH)}\n...[合并转发内容过长，已截断]`
+        : text,
+    images,
+  }
 }
 
 function getImageUrlFromSegment(image: RecvImageElement): string {
@@ -155,11 +326,15 @@ async function prepareImageUrl(image: PromptImage): Promise<string> {
   }
 }
 
-function buildPromptText(content: string, quotedText: string, images: PromptImage[]): string {
+function buildPromptText(content: string, quotedText: string, forwardText: string, images: PromptImage[]): string {
   const parts: string[] = []
 
   if (quotedText) {
     parts.push(`引用消息文字：\n${quotedText}`)
+  }
+
+  if (forwardText) {
+    parts.push(`合并转发聊天记录：\n${forwardText}`)
   }
 
   if (content) {
@@ -545,7 +720,7 @@ export default definePlugin({
 
 触发方式:
 %问题 或 $问题
-支持直接发送图文、引用文字后提问、引用图片后提问、引用图文消息后提问
+支持直接发送图文、引用文字后提问、引用图片后提问、引用图文消息后提问、引用合并转发聊天记录后提问
 
 当前配置:
 - 启用状态: ${pluginConfig.enabled ? '已启用' : '已禁用'}
@@ -678,6 +853,45 @@ export default definePlugin({
       return images
     }
 
+    async function readForwardContext(event: MessageEvent, label: string): Promise<ForwardContext> {
+      const forwardSegments = ctx.filter(event, 'forward') as RecvForwardElement[]
+      const texts: string[] = []
+      const images: PromptImage[] = []
+
+      for (const [index, forward] of forwardSegments.entries()) {
+        const title = `${label}合并转发 ${index + 1}`
+
+        if (Array.isArray(forward.content) && forward.content.length > 0) {
+          const context = buildForwardContext({ messages: forward.content }, title)
+          texts.push(context.text)
+          images.push(...context.images)
+          continue
+        }
+
+        if (!forward.id) {
+          texts.push(`${title}：无法读取，缺少合并转发 ID`)
+          continue
+        }
+
+        try {
+          const bot = ctx.pickBot(event.self_id) || ctx.bot
+          const payload = await bot.api<any>('get_forward_msg', { id: forward.id })
+          const context = buildForwardContext(payload, title)
+          texts.push(context.text)
+          images.push(...context.images)
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          ctx.logger.warn(`[chatgpt] 读取合并转发失败: ${message}`)
+          texts.push(`${title}：读取失败（${message}）`)
+        }
+      }
+
+      return {
+        text: texts.filter(Boolean).join('\n\n'),
+        images,
+      }
+    }
+
     ctx.handle('message.group', async (e) => {
       // 检查启用状态与群白名单
       if (!pluginConfig.enabled) return
@@ -700,8 +914,15 @@ export default definePlugin({
       const quotedText = quoteMsg ? ctx.text(quoteMsg) : ''
       const currentImages = ctx.filter(e, 'image')
       const quoteImages = quoteMsg ? ctx.filter(quoteMsg, 'image') : []
-      const promptImages = collectPromptImages(currentImages, quoteImages)
-      const prompt = buildPromptText(content, quotedText, promptImages)
+      const currentForwardContext = await readForwardContext(e, '当前消息')
+      const quoteForwardContext = quoteMsg ? await readForwardContext(quoteMsg, '引用消息') : { text: '', images: [] }
+      const forwardText = [quoteForwardContext.text, currentForwardContext.text].filter(Boolean).join('\n\n')
+      const promptImages = [
+        ...collectPromptImages(currentImages, quoteImages),
+        ...quoteForwardContext.images,
+        ...currentForwardContext.images,
+      ]
+      const prompt = buildPromptText(content, quotedText, forwardText, promptImages)
 
       if (!prompt && promptImages.length === 0) {
         await e.reply('请引用要分析的消息或直接输入内容')
