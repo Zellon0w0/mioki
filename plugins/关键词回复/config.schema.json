@@ -25,6 +25,50 @@
         "type": "integer"
       },
       "description": "禁止触发或修改规则的 QQ 号，每行一个"
+    },
+    "r2": {
+      "title": "Cloudflare R2 配置",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "title": "启用 R2 上传",
+          "type": "boolean",
+          "default": false
+        },
+        "accountId": {
+          "title": "Cloudflare 账户 ID",
+          "type": "string",
+          "default": ""
+        },
+        "accessKeyId": {
+          "title": "R2 Access Key ID",
+          "type": "string",
+          "default": ""
+        },
+        "secretAccessKey": {
+          "title": "R2 Secret Access Key",
+          "type": "string",
+          "default": ""
+        },
+        "bucketName": {
+          "title": "存储桶名称",
+          "type": "string",
+          "default": ""
+        },
+        "customDomain": {
+          "title": "自定义域名/公网直链域名",
+          "type": "string",
+          "description": "如 https://img.domain.com，如果不填则无法正常回显图片",
+          "default": ""
+        },
+        "pathPrefix": {
+          "title": "保存目录前缀",
+          "type": "string",
+          "description": "上传到存储桶下的指定目录/文件夹前缀，例如 'mioki/'。为空则直接保存在根目录",
+          "default": ""
+        }
+      },
+      "required": ["enabled"]
     }
   },
   "required": ["enabled", "whitelist", "blacklist"]

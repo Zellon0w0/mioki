@@ -3,6 +3,9 @@ import path from 'node:path'
 import fs from 'node:fs'
 import { dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import crypto from 'node:crypto'
+import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3'
+import axios from 'axios'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
@@ -22,10 +25,21 @@ interface PluginData {
   rules: Record<string, ReplyRule[]> // 按群号隔离，key为groupId或'private'
 }
 
+interface R2Config {
+  enabled: boolean
+  accountId: string
+  accessKeyId: string
+  secretAccessKey: string
+  bucketName: string
+  customDomain: string
+  pathPrefix: string
+}
+
 interface PluginConfig {
   enabled: boolean
   whitelist: number[]
   blacklist: number[]
+  r2?: R2Config
 }
 
 // 用户操作状态
@@ -36,11 +50,27 @@ interface UserState {
   timer?: NodeJS.Timeout
 }
 
+/**
+ * 将接收到的消息元素（RecvElement）转换为可发送的消息元素（SendElement）
+ *
+ * 收到的图片消息中 `file` 字段是 QQ 本地的临时文件名/哈希，
+ * 取 `url` 作为发送的源，避免因本地缓存过期报错。
+ */
+const toSendable = (elements: any[]): any[] => {
+  return elements.map(el => {
+    if ((el.type === 'image' || el.type === 'video' || el.type === 'record') && el.url) {
+      return { type: el.type, file: el.url }
+    }
+    const { type, ...data } = el
+    return { type, ...data }
+  })
+}
+
 export default definePlugin({
   name: '关键词回复',
   version: '1.0.1',
   description: '关键词自动回复插件',
-  
+
   async setup(ctx) {
     const pluginDir = path.join(getAbsPluginDir(), '关键词回复')
     const configPath = path.join(pluginDir, 'config.json')
@@ -50,7 +80,16 @@ export default definePlugin({
       const defaultConfig: PluginConfig = {
         enabled: true,
         whitelist: [],
-        blacklist: []
+        blacklist: [],
+        r2: {
+          enabled: false,
+          accountId: '',
+          accessKeyId: '',
+          secretAccessKey: '',
+          bucketName: '',
+          customDomain: '',
+          pathPrefix: ''
+        }
       }
 
       if (!fs.existsSync(configPath)) {
@@ -64,6 +103,15 @@ export default definePlugin({
           enabled: parsed.enabled ?? defaultConfig.enabled,
           whitelist: Array.isArray(parsed.whitelist) ? parsed.whitelist : defaultConfig.whitelist,
           blacklist: Array.isArray(parsed.blacklist) ? parsed.blacklist : defaultConfig.blacklist,
+          r2: parsed.r2 ? {
+            enabled: parsed.r2.enabled ?? false,
+            accountId: parsed.r2.accountId ?? '',
+            accessKeyId: parsed.r2.accessKeyId ?? '',
+            secretAccessKey: parsed.r2.secretAccessKey ?? '',
+            bucketName: parsed.r2.bucketName ?? '',
+            customDomain: parsed.r2.customDomain ?? '',
+            pathPrefix: parsed.r2.pathPrefix ?? ''
+          } : defaultConfig.r2
         }
       } catch (err: any) {
         ctx.logger.error(`加载配置失败，将使用默认配置: ${err.message}`)
@@ -81,6 +129,79 @@ export default definePlugin({
       } catch (err: any) {
         ctx.logger.error(`保存 config.json 失败: ${err.message}`)
       }
+    }
+
+    // 上传 R2 主逻辑
+    const uploadUrlToR2IfEnabled = async (url: string, type: 'image' | 'video' | 'record'): Promise<string> => {
+      const r2 = config.r2
+      if (!r2 || !r2.enabled) {
+        return url
+      }
+
+      if (!r2.accountId || !r2.accessKeyId || !r2.secretAccessKey || !r2.bucketName) {
+        ctx.logger.error('Cloudflare R2 启用了但配置项不完整')
+        return url
+      }
+
+      try {
+        const response = await axios.get(url, { responseType: 'arraybuffer' })
+        const buffer = Buffer.from(response.data)
+
+        // 提取扩展名
+        let ext = 'bin'
+        const contentType = response.headers['content-type'] || ''
+        if (type === 'image') {
+          if (contentType.includes('png')) ext = 'png'
+          else if (contentType.includes('gif')) ext = 'gif'
+          else if (contentType.includes('webp')) ext = 'webp'
+          else ext = 'jpg'
+        } else if (type === 'video') {
+          ext = 'mp4'
+        } else if (type === 'record') {
+          ext = 'amr'
+        }
+
+        const client = new S3Client({
+          region: 'auto',
+          endpoint: `https://${r2.accountId}.r2.cloudflarestorage.com`,
+          credentials: {
+            accessKeyId: r2.accessKeyId,
+            secretAccessKey: r2.secretAccessKey
+          }
+        })
+
+        const fileHash = crypto.createHash('md5').update(buffer).digest('hex')
+        const prefix = r2.pathPrefix ? r2.pathPrefix.replace(/\/$/, '') + '/' : ''
+        const key = `${prefix}${type}s/${fileHash}.${ext}`
+
+        await client.send(
+          new PutObjectCommand({
+            Bucket: r2.bucketName,
+            Key: key,
+            Body: buffer,
+            ContentType: contentType || 'application/octet-stream'
+          })
+        )
+
+        const domain = r2.customDomain ? r2.customDomain.replace(/\/$/, '') : `https://${r2.bucketName}.${r2.accountId}.r2.cloudflarestorage.com`
+        return `${domain}/${key}`
+      } catch (err: any) {
+        ctx.logger.error(`上传文件至 R2 失败: ${err.message}`)
+        return url
+      }
+    }
+
+    const processElementsToSave = async (elements: any[]): Promise<any[]> => {
+      const processed: any[] = []
+      for (const el of elements) {
+        if ((el.type === 'image' || el.type === 'video' || el.type === 'record') && el.url) {
+          const r2Url = await uploadUrlToR2IfEnabled(el.url, el.type)
+          processed.push({ ...el, file: r2Url, url: r2Url })
+        } else {
+          processed.push(el)
+        }
+      }
+      return processed
     }
 
     // 1. 初始化存储
@@ -177,15 +298,22 @@ export default definePlugin({
         if (state.step === 'waiting_content') {
           const currentScope = groupId ? String(groupId) : 'private'
           const targetScope = state.groupId ? String(state.groupId) : 'private'
-          
+
           if (currentScope !== targetScope) return
+
+          // 这里原先的代码是：await processElementsToSave(toSendable(e.message))
+          // 逻辑漏洞：toSendable 会把带 url 的图片元素中 url 字段洗掉，并覆盖成 { type: 'image', file: el.url }
+          // 这导致随后的 processElementsToSave 因为找不到 url 属性而无法触发 R2 上传动作。
+          // 修复方案：直接把含有原始 url 信息的 e.message 传给 processElementsToSave，由其内部处理后，再执行 toSendable 反写 file。
+          const processedRawElements = await processElementsToSave(e.message)
+          const processedElements = toSendable(processedRawElements)
 
           const rule: ReplyRule = {
             id: generateId(),
             trigger: state.tempRule!.trigger!,
             mode: state.tempRule!.mode as 'exact' | 'fuzzy',
             content: text || '[非文本消息]',
-            elements: e.message,
+            elements: processedElements,
             creator: userId,
             createTime: Date.now()
           }
@@ -195,7 +323,7 @@ export default definePlugin({
           }
           store.data.rules[targetScope].push(rule)
           await store.write()
-          
+
           resetUserState(userId)
           await e.reply('✅ 添加回复规则成功！(仅当前群/私聊生效)')
           return
@@ -368,33 +496,33 @@ export default definePlugin({
 
       // 2. 白名单检查 (仅针对群聊)
       if (groupId && config.whitelist.length > 0) {
-          if (!config.whitelist.includes(groupId)) {
-               return
-          }
-      }
+         if (!config.whitelist.includes(groupId)) {
+              return
+         }
+     }
 
-      // 3. 关键词匹配
-      const scope = groupId ? String(groupId) : 'private'
-      const scopeRules = store.data.rules[scope] || []
+     // 3. 关键词匹配
+     const scope = groupId ? String(groupId) : 'private'
+     const scopeRules = store.data.rules[scope] || []
 
-      for (const rule of scopeRules) {
-          let matched = false
-          if (rule.mode === 'exact') {
-              matched = text === rule.trigger
-          } else {
-               matched = text.includes(rule.trigger)
-          }
+     for (const rule of scopeRules) {
+         let matched = false
+         if (rule.mode === 'exact') {
+             matched = text === rule.trigger
+         } else {
+              matched = text.includes(rule.trigger)
+         }
 
-          if (matched) {
-              if (rule.elements && rule.elements.length > 0) {
-                  await e.reply(rule.elements)
-              } else {
-                  await e.reply(rule.content)
-              }
-              return 
-          }
-      }
-    })
+         if (matched) {
+             if (rule.elements && rule.elements.length > 0) {
+                  await e.reply(toSendable(rule.elements))
+             } else {
+                 await e.reply(rule.content)
+             }
+             return 
+         }
+     }
+   })
     
     ctx.logger.info('关键词回复 插件已启动')
   }
