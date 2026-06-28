@@ -4,8 +4,7 @@ import fs from 'node:fs'
 import { dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import crypto from 'node:crypto'
-import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3'
-import axios from 'axios'
+import { uploadUrl } from '../_shared/upload'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
@@ -133,58 +132,8 @@ export default definePlugin({
 
     // 上传 R2 主逻辑
     const uploadUrlToR2IfEnabled = async (url: string, type: 'image' | 'video' | 'record'): Promise<string> => {
-      const r2 = config.r2
-      if (!r2 || !r2.enabled) {
-        return url
-      }
-
-      if (!r2.accountId || !r2.accessKeyId || !r2.secretAccessKey || !r2.bucketName) {
-        ctx.logger.error('Cloudflare R2 启用了但配置项不完整')
-        return url
-      }
-
       try {
-        const response = await axios.get(url, { responseType: 'arraybuffer' })
-        const buffer = Buffer.from(response.data)
-
-        // 提取扩展名
-        let ext = 'bin'
-        const contentType = response.headers['content-type'] || ''
-        if (type === 'image') {
-          if (contentType.includes('png')) ext = 'png'
-          else if (contentType.includes('gif')) ext = 'gif'
-          else if (contentType.includes('webp')) ext = 'webp'
-          else ext = 'jpg'
-        } else if (type === 'video') {
-          ext = 'mp4'
-        } else if (type === 'record') {
-          ext = 'amr'
-        }
-
-        const client = new S3Client({
-          region: 'auto',
-          endpoint: `https://${r2.accountId}.r2.cloudflarestorage.com`,
-          credentials: {
-            accessKeyId: r2.accessKeyId,
-            secretAccessKey: r2.secretAccessKey
-          }
-        })
-
-        const fileHash = crypto.createHash('md5').update(buffer).digest('hex')
-        const prefix = r2.pathPrefix ? r2.pathPrefix.replace(/\/$/, '') + '/' : ''
-        const key = `${prefix}${type}s/${fileHash}.${ext}`
-
-        await client.send(
-          new PutObjectCommand({
-            Bucket: r2.bucketName,
-            Key: key,
-            Body: buffer,
-            ContentType: contentType || 'application/octet-stream'
-          })
-        )
-
-        const domain = r2.customDomain ? r2.customDomain.replace(/\/$/, '') : `https://${r2.bucketName}.${r2.accountId}.r2.cloudflarestorage.com`
-        return `${domain}/${key}`
+        return await uploadUrl(url, type, config.r2)
       } catch (err: any) {
         ctx.logger.error(`上传文件至 R2 失败: ${err.message}`)
         return url

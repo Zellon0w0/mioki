@@ -293,11 +293,9 @@ export default definePlugin({
     const reloadRunningPlugin = async (name: string) => {
       const plugin = runtimePlugins.get(name)
 
-      if (!plugin) {
-        return false
+      if (plugin) {
+        await plugin.disable()
       }
-
-      await plugin.disable()
 
       const pluginPath = path.join(getAbsPluginDir(), name)
 

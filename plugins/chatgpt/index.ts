@@ -37,6 +37,12 @@ interface Whitelist {
   nickname: string[]
 }
 
+// 别名映射接口定义
+interface ModelAlias {
+  alias: string
+  model: string
+}
+
 // 配置接口定义
 interface PluginConfig {
   enabled: boolean
@@ -45,6 +51,7 @@ interface PluginConfig {
   models: string[]
   apis: { name: string; url: string; apiKey: string }[]
   groupWhitelist: number[]
+  modelAliases: ModelAlias[]
 }
 
 type PromptImage = {
@@ -90,11 +97,11 @@ function isRecord(value: unknown): value is Record<string, any> {
 function parsePromptOptions(content: string): PromptOptions {
   let noPic = false
   const normalizedContent = content
-    .replace(/(^|[\s\u3000])-nopic(?=$|[\s\u3000])/gi, (_match, prefix: string) => {
+    .replace(/(^|[\s　])-nopic(?=$|[\s　])/gi, (_match, prefix: string) => {
       noPic = true
       return prefix || ''
     })
-    .replace(/[ \t\u3000]{2,}/g, ' ')
+    .replace(/[ \t　]{2,}/g, ' ')
     .trim()
 
   return {
@@ -267,7 +274,7 @@ function buildForwardContext(payload: any, title: string, includeImages = true):
 
 function getImageUrlFromSegment(image: RecvImageElement): string {
   return (
-    [image.url, image.path, image.file].find((value): value is string => {
+    [image.path, image.url, image.file].find((value): value is string => {
       if (typeof value !== 'string' || !value.trim()) return false
       return /^(https?:\/\/|data:|base64:\/\/|file:\/\/|[a-zA-Z]:[\\/]|\/)/.test(value)
     }) || ''
@@ -303,49 +310,105 @@ function getLocalImagePath(imageUrl: string): string | null {
   return null
 }
 
-async function imageUrlToDataUrl(imageUrl: string): Promise<string> {
-  if (imageUrl.startsWith('data:')) return imageUrl
-  if (imageUrl.startsWith('base64://')) return `data:image/png;base64,${imageUrl.slice('base64://'.length)}`
+async function cacheAndUploadImage(ctx: any, imageUrl: string): Promise<string> {
+  let buffer: Buffer
 
-  const localPath = getLocalImagePath(imageUrl)
-  if (localPath && existsSync(localPath)) {
-    const buffer = readFileSync(localPath)
-    if (buffer.byteLength > baseConfig.MAX_IMAGE_BYTES) {
-      throw new Error(`图片过大: ${buffer.byteLength} bytes`)
+  if (imageUrl.startsWith('data:')) {
+    const base64Data = imageUrl.split(',')[1]
+    buffer = Buffer.from(base64Data, 'base64')
+  } else if (imageUrl.startsWith('base64://')) {
+    buffer = Buffer.from(imageUrl.slice('base64://'.length), 'base64')
+  } else {
+    const localPath = getLocalImagePath(imageUrl)
+    if (localPath && existsSync(localPath)) {
+      buffer = readFileSync(localPath)
+    } else if (/^https?:\/\//i.test(imageUrl)) {
+      const response = await fetch(imageUrl)
+      if (!response.ok) {
+        throw new Error(`下载图片失败: ${response.status} ${response.statusText}`)
+      }
+
+      const arrayBuffer = await response.arrayBuffer()
+      buffer = Buffer.from(arrayBuffer)
+    } else {
+      throw new Error(`不支持的图片地址: ${imageUrl}`)
+    }
+  }
+
+  if (buffer.byteLength > baseConfig.MAX_IMAGE_BYTES) {
+    throw new Error(`图片过大: ${buffer.byteLength} bytes`)
+  }
+
+  // 缓存到本地临时文件
+  const tempDir = join(__dirname, 'temp')
+  if (!existsSync(tempDir)) {
+    mkdirSync(tempDir, { recursive: true })
+  }
+
+  const pathname = imageUrl.split('?')[0]?.toLowerCase() || ''
+  let ext = 'png'
+  if (pathname.endsWith('.jpg') || pathname.endsWith('.jpeg')) ext = 'jpg'
+  else if (pathname.endsWith('.gif')) ext = 'gif'
+  else if (pathname.endsWith('.webp')) ext = 'webp'
+  else if (pathname.endsWith('.bmp')) ext = 'bmp'
+
+  const tempFilePath = join(tempDir, `upload_cache_${Date.now()}_${Math.floor(Math.random() * 10000)}.${ext}`)
+
+  writeFileSync(tempFilePath, buffer)
+  console.log(`图片临时缓存在本地: ${tempFilePath}`)
+
+  try {
+    // 从本地上传
+    const uploadBuffer = readFileSync(tempFilePath)
+    const bot = ctx?.bot
+    if (!bot) {
+      throw new Error('未获取到 Bot 实例')
     }
 
-    return `data:${normalizeMimeType(null, localPath)};base64,${buffer.toString('base64')}`
-  }
+    let uploadUrl = ''
+    if (typeof ctx.uploadImageToCollection === 'function') {
+      uploadUrl = await ctx.uploadImageToCollection(uploadBuffer)
+    } else if (typeof ctx.actions?.uploadImageToCollection === 'function') {
+      uploadUrl = await ctx.actions.uploadImageToCollection(bot, uploadBuffer)
+    }
 
-  if (!/^https?:\/\//i.test(imageUrl)) {
-    throw new Error(`不支持的图片地址: ${imageUrl}`)
-  }
+    if (!uploadUrl) {
+      // fallback
+      if (typeof ctx.uploadImageToGroupHomework === 'function') {
+        uploadUrl = await ctx.uploadImageToGroupHomework(uploadBuffer.toString('base64'))
+      } else if (typeof ctx.actions?.uploadImageToGroupHomework === 'function') {
+        uploadUrl = await ctx.actions.uploadImageToGroupHomework(bot, uploadBuffer.toString('base64'))
+      }
+    }
 
-  const response = await fetch(imageUrl)
-  if (!response.ok) {
-    throw new Error(`下载图片失败: ${response.status} ${response.statusText}`)
-  }
+    if (!uploadUrl) {
+      throw new Error('所有上传方法（收藏夹/群作业）皆未返回有效 URL')
+    }
 
-  const contentLength = Number(response.headers.get('content-length') || 0)
-  if (contentLength > baseConfig.MAX_IMAGE_BYTES) {
-    throw new Error(`图片过大: ${contentLength} bytes`)
+    console.log(`本地上传图床成功: ${uploadUrl}`)
+    return uploadUrl
+  } catch (error) {
+    console.error('缓存并上传图片失败:', error)
+    throw error
+  } finally {
+    // 垃圾回收，删除临时文件
+    try {
+      if (existsSync(tempFilePath)) {
+        unlinkSync(tempFilePath)
+      }
+    } catch (err) {
+      console.error(`删除图片临时文件失败 ${tempFilePath}:`, err)
+    }
   }
-
-  const arrayBuffer = await response.arrayBuffer()
-  if (arrayBuffer.byteLength > baseConfig.MAX_IMAGE_BYTES) {
-    throw new Error(`图片过大: ${arrayBuffer.byteLength} bytes`)
-  }
-
-  const mimeType = normalizeMimeType(response.headers.get('content-type'), imageUrl)
-  return `data:${mimeType};base64,${Buffer.from(arrayBuffer).toString('base64')}`
 }
 
-async function prepareImageUrl(image: PromptImage): Promise<string> {
+async function prepareImageUrl(ctx: any, image: PromptImage): Promise<string> {
   try {
-    return await imageUrlToDataUrl(image.url)
+    const url = await cacheAndUploadImage(ctx, image.url)
+    return url
   } catch (error) {
-    console.warn(`图片转为 data URL 失败，回退原始链接 (${image.label}):`, error)
-    return image.url
+    console.warn(`图片缓存并上传失败 (${image.label}):`, error)
+    throw new Error(`图片缓存并上传失败，错误: ${error instanceof Error ? error.message : String(error)}`)
   }
 }
 
@@ -375,7 +438,7 @@ function buildPromptText(content: string, quotedText: string, forwardText: strin
   return parts.join('\n\n')
 }
 
-async function buildOpenAIMessageContent(text: string, images: PromptImage[]): Promise<string | ChatContentPart[]> {
+async function buildOpenAIMessageContent(ctx: any, text: string, images: PromptImage[]): Promise<string | ChatContentPart[]> {
   if (images.length === 0) return text
 
   const content: ChatContentPart[] = [
@@ -390,7 +453,7 @@ async function buildOpenAIMessageContent(text: string, images: PromptImage[]): P
     content.push({
       type: 'image_url',
       image_url: {
-        url: await prepareImageUrl(image),
+        url: await prepareImageUrl(ctx, image),
         detail: 'auto',
       },
     })
@@ -405,12 +468,25 @@ function isVisionUnsupportedError(error: unknown): boolean {
     message || '',
   )
 }
+
+function getRealModelName(modelName: string, aliases: ModelAlias[] = []): string {
+  if (!aliases || !Array.isArray(aliases)) return modelName
+  const found = aliases.find((a) => a.alias === modelName)
+  return found ? found.model : modelName
+}
+
+function getDisplayName(modelName: string, aliases: ModelAlias[] = []): string {
+  if (!aliases || !Array.isArray(aliases)) return modelName
+  const found = aliases.find((a) => a.alias === modelName || a.model === modelName)
+  return found ? found.alias : modelName
+}
+
 // 默认配置
 const defaultConfig: PluginConfig = {
   enabled: true,
   currentModel: 'deepseek-chat',
   currentApi: 'deepseek',
-  models: ['deepseek-chat', 'gpt-4o', 'gpt-4o-mini', 'claude-3-5-sonnet', 'gemini-2.5-flash'],
+  models: ['deepseek-chat', 'gpt-4o', 'gpt-4o-mini', 'claude-3-5-sonnet', 'gemini-2.5-flash', 'gemini-3.5-flash-high'],
   apis: [
     {
       name: 'deepseek',
@@ -429,11 +505,20 @@ const defaultConfig: PluginConfig = {
     },
   ],
   groupWhitelist: [],
+  modelAliases: [
+    {
+      alias: 'gemini-3.5-flash-high',
+      model: 'gemini-3-flash-agent',
+    },
+  ],
 }
 
 // 初始化 Markdown 解析器
 const md = new MarkdownIt()
-md.use(mk)
+md.use(mk, {
+  throwOnError: false,
+  strict: 'ignore',
+})
 
 function cleanupTempFolder() {
   const tempDir = join(__dirname, 'temp')
@@ -520,6 +605,20 @@ async function renderMarkdownToImage(markdown: string): Promise<string> {
         ${renderedMarkdown}
         <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.js"></script>
         <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/contrib/auto-render.min.js"></script>
+        <script>
+          document.addEventListener("DOMContentLoaded", function() {
+            renderMathInElement(document.body, {
+              delimiters: [
+                {left: "$$", right: "$$", display: true},
+                {left: "$", right: "$", display: false},
+                {left: "\\(", right: "\\)", display: false},
+                {left: "\\[", right: "\\]", display: true}
+              ],
+              throwOnError: false,
+              strict: 'ignore'
+            });
+          });
+        </script>
       </body>
       </html>
     `
@@ -728,6 +827,12 @@ export default definePlugin({
         return false
       }
 
+      // 仅允许主人 QQ 2973496443 管理，其他人发送直接忽略阻断
+      const senderQQ = Number(e.user_id)
+      if (senderQQ !== 2973496443) {
+        return true
+      }
+
       const cmd = parts[1]
 
       // #gpt help / #gpt
@@ -762,14 +867,25 @@ export default definePlugin({
           return true
         }
 
-        if (!pluginConfig.models.includes(modelName)) {
-          await e.reply(`模型 "${modelName}" 不存在。可用模型:\n${pluginConfig.models.map((m) => `- ${m}`).join('\n')}`)
+        const validModels = pluginConfig.models || []
+        const aliases = pluginConfig.modelAliases || []
+        const hasAlias = aliases.some((a) => a.alias === modelName)
+        const hasReal = aliases.some((a) => a.model === modelName)
+
+        if (!validModels.includes(modelName) && !hasAlias && !hasReal) {
+          await e.reply(
+            `模型 "${modelName}" 不存在。配置中可用模型:\n${validModels.map((m) => `- ${m}`).join('\n')}` +
+              (aliases.length > 0
+                ? `\n已配置昵称映射:\n${aliases.map((a) => `- ${a.alias} -> ${a.model}`).join('\n')}`
+                : '')
+          )
           return true
         }
 
         pluginConfig.currentModel = modelName
         saveConfig(pluginConfig)
-        await e.reply(`已切换到模型: ${modelName}`)
+        const displayName = getDisplayName(modelName, aliases)
+        await e.reply(`已切换到模型: ${displayName}${displayName !== modelName ? ` (${modelName})` : ''}`)
         return true
       }
 
@@ -799,10 +915,29 @@ export default definePlugin({
         const listType = parts[2]
 
         if (listType === 'model' || listType === 'models') {
-          const modelsList = pluginConfig.models
-            .map((m) => `${m === pluginConfig.currentModel ? '→ ' : '  '}${m}`)
-            .join('\n')
-          await e.reply(`可用模型 (当前: ${pluginConfig.currentModel}):\n${modelsList}`)
+          const validModels = pluginConfig.models || []
+          const aliases = pluginConfig.modelAliases || []
+          const lines: string[] = []
+
+          validModels.forEach((m) => {
+            const isCurrent = m === pluginConfig.currentModel
+            const aliasObj = aliases.find((a) => a.model === m)
+            const aliasStr = aliasObj ? ` (昵称: ${aliasObj.alias})` : ''
+            lines.push(`${isCurrent ? '→ ' : '  '}${m}${aliasStr}`)
+          })
+
+          aliases.forEach((a) => {
+            if (!validModels.includes(a.alias)) {
+              const isCurrent = a.alias === pluginConfig.currentModel
+              lines.push(`${isCurrent ? '→ ' : '  '}${a.alias} -> ${a.model}`)
+            }
+          })
+
+          const curDisplayName = getDisplayName(pluginConfig.currentModel, aliases)
+          const curRealName = getRealModelName(pluginConfig.currentModel, aliases)
+          const curDisplay = curDisplayName === curRealName ? curDisplayName : `${curDisplayName} (${curRealName})`
+
+          await e.reply(`可用模型 (当前: ${curDisplay}):\n${lines.join('\n')}`)
           return true
         }
 
@@ -963,15 +1098,16 @@ export default definePlugin({
       await runWithReaction(e, async () => {
         try {
           let lastError: Error | null = null
-          const userMessageContent = await buildOpenAIMessageContent(prompt, promptImages)
+          const userMessageContent = await buildOpenAIMessageContent(ctx, prompt, promptImages)
 
           for (let retry = 0; retry <= baseConfig.MAX_RETRIES; retry++) {
             try {
+              const realModelName = getRealModelName(pluginConfig.currentModel, pluginConfig.modelAliases || [])
               console.log(`尝试第 ${retry + 1} 次请求...`)
-              console.log(`使用API: ${pluginConfig.currentApi}, 模型: ${pluginConfig.currentModel}`)
+              console.log(`使用API: ${pluginConfig.currentApi}, 原始模型: ${pluginConfig.currentModel}, 实际模型: ${realModelName}`)
 
               // 处理maoleio API的特殊模型名称
-              let modelName = pluginConfig.currentModel
+              let modelName = realModelName
               if (pluginConfig.currentApi === 'maoleio') {
                 // maoleio可能不支持某些模型名称，尝试调整
                 if (modelName.startsWith('gpt-')) {
@@ -1025,7 +1161,8 @@ export default definePlugin({
               const totalTokens = usage.total_tokens || 0
 
               // 添加模型和token信息到回复内容
-              const modelInfo = `\n\n使用模型: ${pluginConfig.currentModel} | 消耗Token: ${totalTokens} (输入:${promptTokens} 输出:${completionTokens})`
+              const displayModelName = getDisplayName(pluginConfig.currentModel, pluginConfig.modelAliases || [])
+              const modelInfo = `\n\n使用模型: ${displayModelName} | 消耗Token: ${totalTokens} (输入:${promptTokens} 输出:${completionTokens})`
               const finalContent = replyContent + modelInfo
 
               if (finalContent.length > baseConfig.MAX_RESPONSE_LENGTH) {
@@ -1036,7 +1173,12 @@ export default definePlugin({
               let imagePath: string | null = null
               try {
                 imagePath = await renderMarkdownToImage(finalContent)
-                await e.reply([ctx.segment.image(imagePath)], true)
+                if (imagePath && existsSync(imagePath)) {
+                  const imageBuffer = readFileSync(imagePath)
+                  await e.reply([ctx.segment.image(imageBuffer)], true)
+                } else {
+                  throw new Error('渲染生成的图片文件不存在')
+                }
               } catch (renderError) {
                 console.error('渲染失败，回退到文本:', renderError)
                 await e.reply(finalContent)
@@ -1071,8 +1213,11 @@ export default definePlugin({
               }
 
               if (promptImages.length > 0 && isVisionUnsupportedError(error)) {
+                const displayName = getDisplayName(pluginConfig.currentModel, pluginConfig.modelAliases || [])
+                const realName = getRealModelName(pluginConfig.currentModel, pluginConfig.modelAliases || [])
+                const modelDisplay = displayName === realName ? displayName : `${displayName} (${realName})`
                 await e.reply(
-                  `当前模型或API不支持图片输入，请切换到支持视觉的模型/API后重试。\n当前模型: ${pluginConfig.currentModel}\n当前API: ${pluginConfig.currentApi}`,
+                  `当前模型或API不支持图片输入，请切换到支持视觉的模型/API后重试。\n当前模型: ${modelDisplay}\n当前API: ${pluginConfig.currentApi}`,
                 )
                 return
               }

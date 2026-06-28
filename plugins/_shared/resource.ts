@@ -258,22 +258,31 @@ class DefaultBrowserService implements SharedBrowserService {
   async close(): Promise<void> {
     this.cancelIdleClose()
 
-    if (this.launchPromise) {
+    const launchPromise = this.launchPromise
+    const browser = this.browser
+
+    this.launchPromise = null
+    this.browser = null
+
+    if (launchPromise) {
       try {
-        const browser = await this.launchPromise
-        await browser.close()
+        const b = await launchPromise
+        await Promise.race([
+          b.close(),
+          new Promise((resolve) => setTimeout(resolve, 5000)),
+        ]).catch(() => {})
       } catch {}
-      this.launchPromise = null
-      this.browser = null
       return
     }
 
-    if (!this.browser) return
-
-    try {
-      await this.browser.close()
-    } catch {}
-    this.browser = null
+    if (browser) {
+      try {
+        await Promise.race([
+          browser.close(),
+          new Promise((resolve) => setTimeout(resolve, 5000)),
+        ]).catch(() => {})
+      } catch {}
+    }
   }
 
   stats(): BrowserServiceStats {
@@ -307,11 +316,15 @@ class DefaultBrowserService implements SharedBrowserService {
     const executablePath = findChromeExecutable(configuredPath)
     this.executablePath = executablePath
 
+    const userDataDir = join(process.cwd(), '.puppeteer_data')
+
     try {
       const browser = await puppeteer.launch({
         executablePath,
         headless: true,
+        timeout: 15_000,
         protocolTimeout: 30_000,
+        userDataDir,
         args: [
           '--no-sandbox',
           '--disable-setuid-sandbox',

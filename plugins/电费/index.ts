@@ -54,7 +54,10 @@ interface PluginData {
 
 // 初始化 Markdown 解析器
 const md = new MarkdownIt()
-md.use(mk)
+md.use(mk, {
+  throwOnError: false,
+  strict: 'ignore',
+})
 
 const STUDENT_ID_REGEX = /^202\d{6,12}$/
 const UNSUBSCRIBE_COMMANDS = new Set(['T', 't', '退订', '取消提醒', '不再提醒'])

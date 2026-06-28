@@ -42,12 +42,9 @@ function renderHtml(text: string, mode: 'markdown' | 'editor', lang: string, the
 <head>
   <meta charset="UTF-8">
   <style>
-    /* LXGW WenKai Screen (霞鹜文楷屏幕版) font loading */
-    @import url('https://fastly.jsdelivr.net/npm/lxgw-wenkai-screen-webfont@1.7.0/style.css');
-
     :root {
-      --font-editor: 'LXGW WenKai Screen', 'LXGW WenKai', 'Consolas', 'Courier New', monospace;
-      --font-sans: 'LXGW WenKai Screen', 'LXGW WenKai', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      --font-editor: Consolas, Monaco, 'Andale Mono', 'Ubuntu Mono', monospace;
+      --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Microsoft YaHei", "PingFang SC", sans-serif;
     }
 
     * {
@@ -279,30 +276,30 @@ function renderHtml(text: string, mode: 'markdown' | 'editor', lang: string, the
   </div>
 
   <!-- Markdown-It & PrismJS CDN with preloaded common languages -->
-  <script src="https://fastly.jsdelivr.net/npm/markdown-it@14.1.0/dist/markdown-it.min.js"></script>
-  <script src="https://fastly.jsdelivr.net/npm/prismjs@1.29.0/components/prism-core.min.js"></script>
-  <script src="https://fastly.jsdelivr.net/npm/prismjs@1.29.0/components/prism-markup.min.js"></script>
-  <script src="https://fastly.jsdelivr.net/npm/prismjs@1.29.0/components/prism-css.min.js"></script>
-  <script src="https://fastly.jsdelivr.net/npm/prismjs@1.29.0/components/prism-clike.min.js"></script>
-  <script src="https://fastly.jsdelivr.net/npm/prismjs@1.29.0/components/prism-javascript.min.js"></script>
-  <script src="https://fastly.jsdelivr.net/npm/prismjs@1.29.0/components/prism-typescript.min.js"></script>
-  <script src="https://fastly.jsdelivr.net/npm/prismjs@1.29.0/components/prism-python.min.js"></script>
-  <script src="https://fastly.jsdelivr.net/npm/prismjs@1.29.0/components/prism-c.min.js"></script>
-  <script src="https://fastly.jsdelivr.net/npm/prismjs@1.29.0/components/prism-cpp.min.js"></script>
-  <script src="https://fastly.jsdelivr.net/npm/prismjs@1.29.0/components/prism-java.min.js"></script>
-  <script src="https://fastly.jsdelivr.net/npm/prismjs@1.29.0/components/prism-go.min.js"></script>
-  <script src="https://fastly.jsdelivr.net/npm/prismjs@1.29.0/components/prism-rust.min.js"></script>
-  <script src="https://fastly.jsdelivr.net/npm/prismjs@1.29.0/components/prism-bash.min.js"></script>
-  <script src="https://fastly.jsdelivr.net/npm/prismjs@1.29.0/components/prism-json.min.js"></script>
-  <script src="https://fastly.jsdelivr.net/npm/prismjs@1.29.0/components/prism-yaml.min.js"></script>
-  <script src="https://fastly.jsdelivr.net/npm/prismjs@1.29.0/components/prism-markdown.min.js"></script>
-  <script src="https://fastly.jsdelivr.net/npm/prismjs@1.29.0/plugins/autoloader/prism-autoloader.min.js"></script>
-  <script src="https://fastly.jsdelivr.net/npm/prismjs@1.29.0/plugins/line-numbers/prism-line-numbers.min.js"></script>
-  <link rel="stylesheet" href="https://fastly.jsdelivr.net/npm/prismjs@1.29.0/plugins/line-numbers/prism-line-numbers.min.css">
+  <script src="https://npm.elemecdn.com/markdown-it@14.1.0/dist/markdown-it.min.js"></script>
+  <script src="https://npm.elemecdn.com/prismjs@1.29.0/components/prism-core.min.js"></script>
+  <script src="https://npm.elemecdn.com/prismjs@1.29.0/components/prism-markup.min.js"></script>
+  <script src="https://npm.elemecdn.com/prismjs@1.29.0/components/prism-css.min.js"></script>
+  <script src="https://npm.elemecdn.com/prismjs@1.29.0/components/prism-clike.min.js"></script>
+  <script src="https://npm.elemecdn.com/prismjs@1.29.0/components/prism-javascript.min.js"></script>
+  <script src="https://npm.elemecdn.com/prismjs@1.29.0/components/prism-typescript.min.js"></script>
+  <script src="https://npm.elemecdn.com/prismjs@1.29.0/components/prism-python.min.js"></script>
+  <script src="https://npm.elemecdn.com/prismjs@1.29.0/components/prism-c.min.js"></script>
+  <script src="https://npm.elemecdn.com/prismjs@1.29.0/components/prism-cpp.min.js"></script>
+  <script src="https://npm.elemecdn.com/prismjs@1.29.0/components/prism-java.min.js"></script>
+  <script src="https://npm.elemecdn.com/prismjs@1.29.0/components/prism-go.min.js"></script>
+  <script src="https://npm.elemecdn.com/prismjs@1.29.0/components/prism-rust.min.js"></script>
+  <script src="https://npm.elemecdn.com/prismjs@1.29.0/components/prism-bash.min.js"></script>
+  <script src="https://npm.elemecdn.com/prismjs@1.29.0/components/prism-json.min.js"></script>
+  <script src="https://npm.elemecdn.com/prismjs@1.29.0/components/prism-yaml.min.js"></script>
+  <script src="https://npm.elemecdn.com/prismjs@1.29.0/components/prism-markdown.min.js"></script>
+  <script src="https://npm.elemecdn.com/prismjs@1.29.0/plugins/autoloader/prism-autoloader.min.js"></script>
+  <script src="https://npm.elemecdn.com/prismjs@1.29.0/plugins/line-numbers/prism-line-numbers.min.js"></script>
+  <link rel="stylesheet" href="https://npm.elemecdn.com/prismjs@1.29.0/plugins/line-numbers/prism-line-numbers.min.css">
 
   <script>
     // Configure Prism Autoloader CDN Path
-    Prism.plugins.autoloader.languages_path = 'https://fastly.jsdelivr.net/npm/prismjs@1.29.0/components/';
+    Prism.plugins.autoloader.languages_path = 'https://npm.elemecdn.com/prismjs@1.29.0/components/';
 
     // Render configuration passed from node
     window.renderConfig = {
@@ -327,13 +324,13 @@ function renderHtml(text: string, mode: 'markdown' | 'editor', lang: string, the
     };
 
     var themeStylesheets = {
-      'vscode-dark': 'https://fastly.jsdelivr.net/npm/prism-themes@1.9.0/themes/prism-vsc-dark-plus.min.css',
-      'vscode-light': 'https://fastly.jsdelivr.net/npm/prism-themes@1.9.0/themes/prism-vs.min.css',
-      'one-dark': 'https://fastly.jsdelivr.net/npm/prism-themes@1.9.0/themes/prism-one-dark.min.css',
-      'dracula': 'https://fastly.jsdelivr.net/npm/prism-themes@1.9.0/themes/prism-dracula.min.css',
-      'github-light': 'https://fastly.jsdelivr.net/npm/prism-themes@1.9.0/themes/prism-ghcolors.min.css',
-      'nord': 'https://fastly.jsdelivr.net/npm/prism-themes@1.9.0/themes/prism-nord.min.css',
-      'monokai': 'https://fastly.jsdelivr.net/npm/prismjs@1.29.0/themes/prism-okaidia.min.css'
+      'vscode-dark': 'https://npm.elemecdn.com/prism-themes@1.9.0/themes/prism-vsc-dark-plus.min.css',
+      'vscode-light': 'https://npm.elemecdn.com/prism-themes@1.9.0/themes/prism-vs.min.css',
+      'one-dark': 'https://npm.elemecdn.com/prism-themes@1.9.0/themes/prism-one-dark.min.css',
+      'dracula': 'https://npm.elemecdn.com/prism-themes@1.9.0/themes/prism-dracula.min.css',
+      'github-light': 'https://npm.elemecdn.com/prism-themes@1.9.0/themes/prism-ghcolors.min.css',
+      'nord': 'https://npm.elemecdn.com/prism-themes@1.9.0/themes/prism-nord.min.css',
+      'monokai': 'https://npm.elemecdn.com/prismjs@1.29.0/themes/prism-okaidia.min.css'
     };
 
     // Set Theme variables

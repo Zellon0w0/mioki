@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { DatabaseSync } from 'node:sqlite'
 import { sharedBrowser, sharedQueues } from '../_shared/resource'
+import { uploadBuffer } from '../_shared/upload'
 
 import type { GroupMessageEvent } from 'napcat-sdk'
 
@@ -44,6 +45,17 @@ interface PluginConfig {
   enabled: boolean
   groupWhitelist: number[]
   nickname?: string[]
+  backupEnabled?: boolean
+  backupIntervalHours?: number
+  r2?: {
+    enabled?: boolean
+    accountId?: string
+    accessKeyId?: string
+    secretAccessKey?: string
+    bucketName?: string
+    customDomain?: string
+    pathPrefix?: string
+  }
 }
 
 interface UserSnapshot {
@@ -254,6 +266,17 @@ function loadConfig(ctx: any): PluginConfig {
     enabled: true,
     groupWhitelist: [],
     nickname: [],
+    backupEnabled: true,
+    backupIntervalHours: 6,
+    r2: {
+      enabled: false,
+      accountId: '',
+      accessKeyId: '',
+      secretAccessKey: '',
+      bucketName: '',
+      customDomain: '',
+      pathPrefix: 'QBot/backup/'
+    }
   }
 
   if (!existsSync(configPath)) return defaultConfig
@@ -264,6 +287,17 @@ function loadConfig(ctx: any): PluginConfig {
       enabled: typeof data.enabled === 'boolean' ? data.enabled : true,
       groupWhitelist: Array.isArray(data.groupWhitelist) ? data.groupWhitelist.filter((id) => Number.isFinite(id)) : [],
       nickname: Array.isArray(data.nickname) ? data.nickname : [],
+      backupEnabled: typeof data.backupEnabled === 'boolean' ? data.backupEnabled : defaultConfig.backupEnabled,
+      backupIntervalHours: typeof data.backupIntervalHours === 'number' && data.backupIntervalHours > 0 ? data.backupIntervalHours : defaultConfig.backupIntervalHours,
+      r2: data.r2 ? {
+        enabled: typeof data.r2.enabled === 'boolean' ? data.r2.enabled : defaultConfig.r2!.enabled,
+        accountId: typeof data.r2.accountId === 'string' ? data.r2.accountId : defaultConfig.r2!.accountId,
+        accessKeyId: typeof data.r2.accessKeyId === 'string' ? data.r2.accessKeyId : defaultConfig.r2!.accessKeyId,
+        secretAccessKey: typeof data.r2.secretAccessKey === 'string' ? data.r2.secretAccessKey : defaultConfig.r2!.secretAccessKey,
+        bucketName: typeof data.r2.bucketName === 'string' ? data.r2.bucketName : defaultConfig.r2!.bucketName,
+        customDomain: typeof data.r2.customDomain === 'string' ? data.r2.customDomain : defaultConfig.r2!.customDomain,
+        pathPrefix: typeof data.r2.pathPrefix === 'string' ? data.r2.pathPrefix : defaultConfig.r2!.pathPrefix
+      } : defaultConfig.r2
     }
   } catch {
     return defaultConfig
@@ -951,6 +985,45 @@ export default definePlugin({
     // 2. 加载配置文件（旧 whitelist.json 自动向后兼容迁移）
     let config = loadConfig(ctx)
 
+    // 自动备份数据库函数
+    const backupDb = async () => {
+      config = loadConfig(ctx)
+      if (!config.backupEnabled) {
+        ctx.logger.debug(`[${PLUGIN_NAME}] 自动备份已禁用。`)
+        return
+      }
+
+      try {
+        if (!existsSync(dbPath)) {
+          ctx.logger.warn(`[${PLUGIN_NAME}] 数据库文件 ${dbPath} 不存在，取消备份。`)
+          return
+        }
+
+        ctx.logger.info(`[${PLUGIN_NAME}] 开始自动备份数据库到 Cloudflare R2...`)
+        const buffer = readFileSync(dbPath)
+
+        const local = getLocalDate()
+        const timeStr = `${local.year}${pad2(local.month)}${pad2(local.day)}_${pad2(local.hour)}${pad2(local.minute)}${pad2(local.second)}`
+        const key = `backups/${PLUGIN_NAME}_data_${timeStr}.db`
+
+        const backupUrl = await uploadBuffer(buffer, key, 'application/x-sqlite3', config.r2)
+        ctx.logger.info(`[${PLUGIN_NAME}] 自动备份成功，已上传至: ${backupUrl}`)
+      } catch (err: any) {
+        if (err.message?.includes('未启用')) {
+          ctx.logger.debug(`[${PLUGIN_NAME}] 自动备份跳过，原因: ${err.message}`)
+        } else {
+          ctx.logger.error(`[${PLUGIN_NAME}] 自动备份数据库失败: ${err.message}`)
+        }
+      }
+    }
+
+    // 3. 注册自动备份定时任务
+    const backupInterval = config.backupIntervalHours || 6
+    const backupCronExpr = backupInterval >= 24 ? '0 0 * * *' : `0 */${backupInterval} * * *`
+    ctx.cron(backupCronExpr, async () => {
+      await backupDb()
+    })
+
     const replyImage = async (event: GroupMessageEvent, report: ReportData) => {
       const image = await renderReportImage(report)
       await event.reply(ctx.segment.image(image))
@@ -969,8 +1042,26 @@ export default definePlugin({
 
       if (!main || main === '帮助') {
         await event.reply(
-          ['#B话榜 帮助', '#B话榜 白名单 列表', '#B话榜 白名单 添加 [群号]', '#B话榜 白名单 删除 [群号]'].join('\n'),
+          [
+            '#B话榜 帮助',
+            '#B话榜 备份',
+            '#B话榜 白名单 列表',
+            '#B话榜 白名单 添加 [群号]',
+            '#B话榜 白名单 删除 [群号]'
+          ].join('\n'),
         )
+        return true
+      }
+
+      if (main === '备份') {
+        await runWithReaction(event, async () => {
+          try {
+            await backupDb()
+            await event.reply('✅ B话榜备份任务已触发，请查看控制台日志了解备份结果。')
+          } catch (err: any) {
+            await event.reply(`❌ 备份失败: ${err.message}`)
+          }
+        })
         return true
       }
 

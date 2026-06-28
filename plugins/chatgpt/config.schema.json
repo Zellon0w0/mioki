@@ -65,7 +65,29 @@
         "type": "integer"
       },
       "description": "允许使用本插件的 QQ 群号，留空代表不限制，每行一个"
+    },
+    "modelAliases": {
+      "title": "模型别名配置",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "title": "别名映射",
+        "properties": {
+          "alias": {
+            "title": "显示别名 (昵称)",
+            "type": "string",
+            "description": "在生成的图片与对话中显示的简称，如 gemini-3.5-flash-high"
+          },
+          "model": {
+            "title": "真实模型 ID",
+            "type": "string",
+            "description": "发起 API 请求时底层的实际模型 ID，如 gemini-3-flash-agent"
+          }
+        },
+        "required": ["alias", "model"]
+      },
+      "description": "用于配置大模型的友好昵称或别名映射，在 WebUI 及图片渲染中显示为别名"
     }
   },
-  "required": ["enabled", "currentModel", "currentApi", "models", "apis"]
+  "required": ["enabled", "currentModel", "currentApi", "models", "apis", "modelAliases"]
 }

@@ -1,0 +1,36 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "状态图片展示插件配置",
+  "description": "管理状态指令的触发动作、渲染主题和群白名单",
+  "type": "object",
+  "properties": {
+    "enabled": {
+      "title": "是否开启本插件的图片渲染状态功能",
+      "type": "boolean",
+      "default": true
+    },
+    "keywords": {
+      "title": "指令触发词",
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": ["状态"]
+    },
+    "theme": {
+      "title": "卡片渐变主题",
+      "type": "string",
+      "default": "default-dark",
+      "enum": ["default-dark", "coral-sunset", "aurora-green", "slate-classic"],
+      "enumNames": ["MD3 暗夜流金", "珊瑚落霞", "极光幽绿", "石板灰雅直"]
+    },
+    "whitelist": {
+      "title": "白名单群号",
+      "type": "array",
+      "items": {
+        "type": "integer"
+      },
+      "description": "允许触发该指令的 QQ 群号，每行一个。留空代表全局响应。"
+    }
+  }
+}

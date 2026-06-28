@@ -2,6 +2,8 @@
 node_modules/
 jspm_packages/
 web_modules/
+.pnpm-store/
+scratch/
 
 # Build & Output Directories
 dist/
