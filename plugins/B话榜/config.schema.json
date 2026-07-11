@@ -27,62 +27,6 @@
       },
       "default": [],
       "description": "与群号一一对应的群别名（用于报表展示，为空时默认使用群名），每行一个"
-    },
-    "backupEnabled": {
-      "title": "启用自动备份",
-      "type": "boolean",
-      "default": true,
-      "description": "是否自动备份 SQLite 数据库到 Cloudflare R2（需在下方配置 R2 凭证）"
-    },
-    "backupIntervalHours": {
-      "title": "备份时间间隔 (小时)",
-      "type": "integer",
-      "default": 6,
-      "description": "自动备份的时间间隔，单位为小时，必须是整数。建议使用可整除 24 的数字，如 1, 2, 3, 4, 6, 8, 12 等"
-    },
-    "r2": {
-      "title": "Cloudflare R2 配置",
-      "type": "object",
-      "properties": {
-        "enabled": {
-          "title": "启用 R2 备份",
-          "type": "boolean",
-          "default": true
-        },
-        "accountId": {
-          "title": "Cloudflare 账户 ID",
-          "type": "string",
-          "default": ""
-        },
-        "accessKeyId": {
-          "title": "R2 Access Key ID",
-          "type": "string",
-          "default": ""
-        },
-        "secretAccessKey": {
-          "title": "R2 Secret Access Key",
-          "type": "string",
-          "default": ""
-        },
-        "bucketName": {
-          "title": "存储桶名称",
-          "type": "string",
-          "default": ""
-        },
-        "customDomain": {
-          "title": "自定义域名/公网直链域名",
-          "type": "string",
-          "description": "如 https://img.domain.com，如果不填则无法正常回显图片",
-          "default": ""
-        },
-        "pathPrefix": {
-          "title": "保存目录前缀",
-          "type": "string",
-          "description": "备份文件在存储桶下的指定目录/文件夹前缀，例如 'QBot/backup/'。为空则直接保存在根目录",
-          "default": "QBot/backup/"
-        }
-      },
-      "required": ["enabled"]
     }
   },
   "required": ["groupWhitelist"]

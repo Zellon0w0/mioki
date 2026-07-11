@@ -43,6 +43,10 @@ pnpm release
 pnpm publish:ci
 ```
 
+## Development Guidelines
+
+- **Plugin-Focused Development**: When developing, try to limit work and modifications strictly to the `plugins/` directory. Avoid modifying the core packages (`packages/mioki` and `packages/napcat-sdk`) unless it is absolutely necessary.
+
 ## Architecture
 
 ### Core Components
