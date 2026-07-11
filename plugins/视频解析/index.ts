@@ -463,35 +463,28 @@ async function renderCommentsImage(comments: Comment[]): Promise<Buffer> {
   )
 }
 
-function createCommentFallbackParts(ctx: any, comment: Comment): any[] {
-  const prefix = comment.pinned ? '[置顶] ' : '[热评] '
-  const messageParts: any[] = [`${prefix}${comment.uname}: ${comment.message}（点赞数：${comment.like}）`]
 
-  if (comment.images && comment.images.length > 0) {
-    for (const imgUrl of comment.images) {
-      messageParts.push(ctx.segment.image(imgUrl))
-    }
-  }
-
-  return messageParts
-}
-
-async function appendCommentsForwardNode(ctx: any, forwardNodes: any[], comments?: Comment[]): Promise<void> {
+async function sendComments(ctx: any, e: any, comments?: Comment[]): Promise<void> {
   if (!comments || comments.length === 0) return
 
   try {
     const imageBuffer = await renderCommentsImage(comments)
-    forwardNodes.push(
-      createLocalForwardMsg(ctx, [ctx.segment.image(`base64://${imageBuffer.toString('base64')}`)], {
-        nickname: '热门评论',
-      }),
-    )
+    await e.reply([ctx.segment.image(`base64://${imageBuffer.toString('base64')}`)])
   } catch (err: any) {
     ctx.logger.error(`[视频解析] 评论图片渲染失败，回退到纯文本: ${err.message || err}`)
+    let textMsg = '【热门评论】\n'
+    for (let i = 0; i < comments.length; i++) {
+      const comment = comments[i]
+      const prefix = comment.pinned ? '[置顶] ' : `[热评 ${i + 1}] `
+      textMsg += `${prefix}${comment.uname}: ${comment.message}（点赞数：${comment.like}）\n`
+    }
+    await e.reply([textMsg.trim()])
     for (const comment of comments) {
-      forwardNodes.push(
-        createLocalForwardMsg(ctx, createCommentFallbackParts(ctx, comment), { nickname: comment.uname }),
-      )
+      if (comment.images && comment.images.length > 0) {
+        for (const imgUrl of comment.images) {
+          await e.reply([ctx.segment.image(imgUrl)])
+        }
+      }
     }
   }
 }
@@ -676,15 +669,11 @@ export default definePlugin({
               `作者：${video.name}\n标题：${video.title}` + (video.desc ? `\n\n正文/简介：${video.desc}` : '')
 
             if (video.type === 'images') {
-              const forwardNodes = [
-                createLocalForwardMsg(ctx, [introText], { nickname: video.name }),
-                ...video.images.map((imgUrl: string) =>
-                  createLocalForwardMsg(ctx, [ctx.segment.image(imgUrl)], { nickname: video.name }),
-                ),
-              ]
-
-              await appendCommentsForwardNode(ctx, forwardNodes, video.comments)
-              await e.reply(forwardNodes)
+              await e.reply([introText])
+              if (video.images.length > 0) {
+                await e.reply(video.images.map((imgUrl: string) => ctx.segment.image(imgUrl)))
+              }
+              await sendComments(ctx, e, video.comments)
             } else {
               // Video mode: download video first
               let videoPath = ''
@@ -696,24 +685,24 @@ export default definePlugin({
                 downloadErrorMsg = `视频下载失败: ${videoError.message}`
               }
 
-              const forwardNodes = [
-                createLocalForwardMsg(ctx, [introText, ctx.segment.image(video.cover)], { nickname: video.name }),
-              ]
-
-              if (videoPath) {
-                forwardNodes.push(
-                  createLocalForwardMsg(ctx, [ctx.segment.video(`file://${videoPath}`)], { nickname: video.name }),
-                )
-              } else {
-                forwardNodes.push(
-                  createLocalForwardMsg(ctx, [`[视频播放失败]\n${downloadErrorMsg}`], { nickname: video.name }),
-                )
-              }
-
-              await appendCommentsForwardNode(ctx, forwardNodes, video.comments)
-
               try {
-                await e.reply(forwardNodes)
+                // Send intro and cover
+                await e.reply([introText, ctx.segment.image(video.cover)])
+
+                // Send video
+                if (videoPath) {
+                  try {
+                    await e.reply([ctx.segment.video(`file://${videoPath}`)])
+                  } catch (videoSendError: any) {
+                    ctx.logger.error(`[视频解析] 视频文件发送失败: ${videoSendError.message}`)
+                    await e.reply([`[视频发送失败]\n${videoSendError.message}`])
+                  }
+                } else {
+                  await e.reply([`[视频播放失败]\n${downloadErrorMsg}`])
+                }
+
+                // Send comments
+                await sendComments(ctx, e, video.comments)
               } finally {
                 if (videoPath) {
                   cleanupFile(ctx, videoPath)
