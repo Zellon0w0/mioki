@@ -36,12 +36,6 @@ export default definePlugin({
     const authMiddleware = webui.authMiddleware
 
     const reloadRunningPlugin = async (name: string) => {
-      const plugin = runtimePlugins.get(name)
-
-      if (plugin) {
-        await plugin.disable()
-      }
-
       const pluginPath = path.join(getAbsPluginDir(), name)
 
       if (!fs.existsSync(pluginPath)) {
@@ -49,6 +43,13 @@ export default definePlugin({
       }
 
       const importedPlugin = (await ctx.jiti.import(pluginPath, { default: true })) as any
+      const declaredName = importedPlugin.name || name
+
+      const plugin = runtimePlugins.get(declaredName)
+
+      if (plugin) {
+        await plugin.disable()
+      }
 
       if (importedPlugin.name !== name) {
         const tip = `插件目录名称: ${name} 和插件代码中设置的 name: ${importedPlugin.name} 不一致，可能导致重载异常，请修改后重启。`

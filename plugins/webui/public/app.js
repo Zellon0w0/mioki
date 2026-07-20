@@ -749,9 +749,24 @@ configForm.addEventListener('submit', async (e) => {
   e.preventDefault()
   if (!activePlugin) return
 
+  const submitter = e.submitter || document.activeElement
+  const isSaveOnly = submitter && (submitter.id === 'save-only-btn' || submitter.closest('#save-only-btn'))
+
   const saveBtn = document.getElementById('save-btn')
-  saveBtn.disabled = true
-  saveBtn.querySelector('span').textContent = '正在保存并重载...'
+  const saveOnlyBtn = document.getElementById('save-only-btn')
+
+  if (saveBtn) {
+    saveBtn.disabled = true
+    if (!isSaveOnly) {
+      saveBtn.querySelector('span').textContent = '正在保存并重载...'
+    }
+  }
+  if (saveOnlyBtn) {
+    saveOnlyBtn.disabled = true
+    if (isSaveOnly) {
+      saveOnlyBtn.querySelector('span').textContent = '正在保存...'
+    }
+  }
 
   try {
     const configData = structuredClone(activePlugin.config || {})
@@ -805,11 +820,15 @@ configForm.addEventListener('submit', async (e) => {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${currentToken}`,
       },
-      body: JSON.stringify({ config: configData }),
+      body: JSON.stringify({ config: configData, reload: !isSaveOnly }),
     })
 
     if (res.ok) {
-      showToast(`插件 ${activePlugin.name} 配置已保存，并已成功热重载生效！`)
+      if (isSaveOnly) {
+        showToast(`插件 ${activePlugin.name} 配置已保存！`)
+      } else {
+        showToast(`插件 ${activePlugin.name} 配置已保存，并已成功热重载生效！`)
+      }
       await loadPlugins()
     } else {
       const errData = await res.json()
@@ -818,8 +837,14 @@ configForm.addEventListener('submit', async (e) => {
   } catch (err) {
     showToast('网络保存失败，请检查服务器连接', 'error')
   } finally {
-    saveBtn.disabled = false
-    saveBtn.querySelector('span').textContent = '保存并重载插件'
+    if (saveBtn) {
+      saveBtn.disabled = false
+      saveBtn.querySelector('span').textContent = '保存并重载插件'
+    }
+    if (saveOnlyBtn) {
+      saveOnlyBtn.disabled = false
+      saveOnlyBtn.querySelector('span').textContent = '仅保存'
+    }
   }
 })
 

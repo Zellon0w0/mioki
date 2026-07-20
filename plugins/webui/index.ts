@@ -291,12 +291,6 @@ export default definePlugin({
     })
 
     const reloadRunningPlugin = async (name: string) => {
-      const plugin = runtimePlugins.get(name)
-
-      if (plugin) {
-        await plugin.disable()
-      }
-
       const pluginPath = path.join(getAbsPluginDir(), name)
 
       if (!fs.existsSync(pluginPath)) {
@@ -304,6 +298,13 @@ export default definePlugin({
       }
 
       const importedPlugin = (await ctx.jiti.import(pluginPath, { default: true })) as any
+      const declaredName = importedPlugin.name || name
+
+      const plugin = runtimePlugins.get(declaredName)
+
+      if (plugin) {
+        await plugin.disable()
+      }
 
       if (importedPlugin.name !== name) {
         const tip = `插件目录名称: ${name} 和插件代码中设置的 name: ${importedPlugin.name} 不一致，可能导致重载异常，请修改后重启。`
@@ -443,10 +444,10 @@ export default definePlugin({
       }
     })
 
-    // API: 保存插件配置并热重载该插件
+    // API: 保存插件配置并选择性热重载该插件
     app.post('/api/plugins/:name/config', authMiddleware, async (req, res) => {
       const { name } = req.params
-      const { config } = req.body
+      const { config, reload = true } = req.body
 
       try {
         const localPlugins = await findLocalPlugins()
@@ -460,13 +461,17 @@ export default definePlugin({
         fs.writeFileSync(pConfigPath, JSON.stringify(config, null, 2), 'utf-8')
         ctx.logger.info(`已更新插件 ${name} 的配置文件`)
 
-        try {
-          ctx.logger.info(`正在热重载插件: ${name}`)
-          const reloaded = await reloadRunningPlugin(name)
-          ctx.logger.info(`插件 ${name} ${reloaded ? '热重载成功' : '当前未运行，已跳过热重载'}`)
-        } catch (reloadErr: any) {
-          ctx.logger.error(`热重载插件 ${name} 失败: ${reloadErr.message}`)
-          return res.status(500).json({ error: `配置已保存，但插件重载失败: ${reloadErr.message}` })
+        if (reload) {
+          try {
+            ctx.logger.info(`正在热重载插件: ${name}`)
+            const reloaded = await reloadRunningPlugin(name)
+            ctx.logger.info(`插件 ${name} ${reloaded ? '热重载成功' : '当前未运行，已跳过热重载'}`)
+          } catch (reloadErr: any) {
+            ctx.logger.error(`热重载插件 ${name} 失败: ${reloadErr.message}`)
+            return res.status(500).json({ error: `配置已保存，但插件重载失败: ${reloadErr.message}` })
+          }
+        } else {
+          ctx.logger.info(`已跳过热重载插件: ${name} (仅保存配置)`)
         }
 
         res.json({ success: true })

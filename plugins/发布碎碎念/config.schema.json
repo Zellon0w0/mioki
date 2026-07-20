@@ -1,0 +1,39 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "发布碎碎念 插件配置",
+  "description": "通过机器人命令自动发布碎碎念到 GitHub Issues 配置",
+  "type": "object",
+  "properties": {
+    "enabled": {
+      "title": "启用状态",
+      "type": "boolean",
+      "default": true,
+      "description": "是否启用发布碎碎念插件"
+    },
+    "githubToken": {
+      "title": "GitHub Access Token",
+      "type": "string",
+      "default": "",
+      "description": "用于调用 GitHub API 创建 Issue 的 Token"
+    },
+    "repo": {
+      "title": "GitHub 仓库",
+      "type": "string",
+      "default": "Zellon0w0/fuwari_zellon0w0",
+      "description": "你的博客所在的 GitHub 仓库，格式为 Owner/Repo"
+    },
+    "label": {
+      "title": "Issue 标签",
+      "type": "string",
+      "default": "thoughts",
+      "description": "创建 Issue 时自动打上的 Label"
+    },
+    "r2PathPrefix": {
+      "title": "R2 存储路径前缀",
+      "type": "string",
+      "default": "QBot/reply/thoughts/",
+      "description": "上传到 Cloudflare R2 时的文件路径前缀"
+    }
+  },
+  "required": ["githubToken", "repo", "label", "r2PathPrefix"]
+}

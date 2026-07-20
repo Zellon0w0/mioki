@@ -198,26 +198,23 @@ const core: MiokiPlugin = definePlugin({
                 }
 
                 let isOff = false
-                const plugin = runtimePlugins.get(target)
+                const pluginPath = ctx.path.join(getAbsPluginDir(), target)
+
+                if (!ctx.fs.existsSync(pluginPath)) {
+                  await e.reply(`插件 ${target} 不存在`, true)
+                  return
+                }
 
                 try {
+                  const importedPlugin = (await ctx.jiti.import(pluginPath, { default: true })) as MiokiPlugin
+                  const declaredName = importedPlugin.name || target
+                  const plugin = runtimePlugins.get(declaredName)
+
                   if (plugin) {
                     await plugin.disable()
-                  }
-
-                  const pluginPath = ctx.path.join(getAbsPluginDir(), target)
-
-                  if (!ctx.fs.existsSync(pluginPath)) {
-                    await e.reply(`插件 ${target} 不存在`, true)
-                    return
-                  }
-
-                  if (!plugin) {
+                  } else {
                     isOff = true
-                    // await e.reply(`插件 ${target} 还未启用，尝试直接启用...`, true)
                   }
-
-                  const importedPlugin = (await ctx.jiti.import(pluginPath, { default: true })) as MiokiPlugin
 
                   if (importedPlugin.name !== target) {
                     const tip = `插件目录名称: ${target} 和插件代码中设置的 name: ${importedPlugin.name} 不一致，可能导致重载异常，请修改后重启。`

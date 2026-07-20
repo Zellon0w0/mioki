@@ -1,0 +1,72 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "拟人化插件配置",
+  "description": "基于 Tool-calling Agent、本地长期记忆与用户画像的拟人化群聊插件",
+  "type": "object",
+  "properties": {
+    "enabled": {
+      "title": "启用状态",
+      "type": "boolean",
+      "default": true,
+      "description": "是否开启本插件的应答处理"
+    },
+    "apiUrl": {
+      "title": "API 请求地址",
+      "type": "string",
+      "default": "https://anti.zellon.me/v1",
+      "description": "大语言模型 API 地址"
+    },
+    "apiKey": {
+      "title": "API 密钥",
+      "type": "string",
+      "description": "API 调用的 Bearer Token",
+      "format": "password"
+    },
+    "model": {
+      "title": "使用的模型",
+      "type": "string",
+      "default": "gemini-3-flash-agent",
+      "description": "聊天对话所使用的模型名称"
+    },
+    "systemPrompt": {
+      "title": "系统人设 (System Prompt)",
+      "type": "string",
+      "description": "Bot 的人设以及基本底线准则"
+    },
+    "probability": {
+      "title": "随机回复概率",
+      "type": "number",
+      "default": 0.3,
+      "description": "在未被 @ 时回复群聊消息的概率 (0.0 到 1.0 之间)"
+    },
+    "groupWhitelist": {
+      "title": "白名单群组",
+      "type": "array",
+      "items": {
+        "type": "integer"
+      },
+      "description": "允许响应此插件的 QQ 群号，留空表示响应所有群"
+    },
+    "favorabilityEnabled": {
+      "title": "启用好感度机制",
+      "type": "boolean",
+      "default": true,
+      "description": "是否允许 Agent 记录和动态调整对不同用户的好感度"
+    },
+    "debounceTime": {
+      "title": "消息防抖延迟(秒)",
+      "type": "integer",
+      "default": 5,
+      "description": "连续发言的合并防抖时间（秒），防止由于用户多句连发导致机器人刷屏"
+    },
+    "blacklistUsers": {
+      "title": "黑名单用户 QQ 号",
+      "type": "array",
+      "items": {
+        "type": "integer"
+      },
+      "description": "静默屏蔽不作任何回复的 QQ 号列表"
+    }
+  },
+  "required": ["apiKey"]
+}
